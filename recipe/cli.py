@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from recipe.ablate.job import DirectionJob
 from recipe.assets import AssetBuilder, EngramPacker
 from recipe.bench.runner import WorkloadRunner
 from recipe.bench.workload import Workload
@@ -33,6 +34,8 @@ def main() -> None:
     calibrate = commands.add_parser("calibrate", help="send the routing calibration workload to a running server")
     calibrate.add_argument("--profile", default="base")
     calibrate.add_argument("--per-kind", type=int, default=12)
+    ablate = commands.add_parser("ablate", help="extract the derisked pack's refusal directions")
+    ablate.add_argument("--rank", type=int, default=4)
     serve = commands.add_parser("serve", help="run the server for a profile")
     serve.add_argument("action", choices=["start", "stop", "check", "dry-run", "smoke"])
     serve.add_argument("--profile", default="base")
@@ -69,6 +72,8 @@ def main() -> None:
         print(Workload.describe(requests))
         outcomes = WorkloadRunner(Probe(serve_options.port, serve_options.model_id)).run(requests)
         print(WorkloadRunner.summary(outcomes))
+    elif args.command == "ablate":
+        print(DirectionJob(settings, rank=args.rank).build())
     elif args.command == "serve":
         server = Server(settings, Profile.load(args.profile))
         actions = {"start": server.start, "stop": server.stop, "check": server.preflight}

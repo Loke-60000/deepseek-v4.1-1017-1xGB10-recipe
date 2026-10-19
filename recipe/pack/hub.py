@@ -8,6 +8,7 @@ import urllib.request
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
+from typing import Any
 
 from huggingface_hub import HfApi, hf_hub_download, hf_hub_url
 
@@ -79,6 +80,10 @@ class HubRepo:
     @cached_property
     def files(self) -> list[str]:
         return HfApi().list_repo_files(self.repo_id, revision=self.revision)
+
+    def read_json(self, filename: str) -> Any:
+        with urllib.request.urlopen(hf_hub_url(self.repo_id, filename, revision=self.revision), timeout=120) as reply:
+            return json.load(reply)
 
     def remote(self, filename: str) -> RemoteFile:
         return RemoteFile(self, filename)

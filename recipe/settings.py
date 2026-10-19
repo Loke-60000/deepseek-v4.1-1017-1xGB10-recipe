@@ -67,6 +67,8 @@ class Sources(Section):
     experts_revision: str
     dense_repo: str
     dense_revision: str
+    derisked_repo: str
+    derisked_revision: str
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,10 @@ class Paths(Section):
     @property
     def cache(self) -> Path:
         return self.root / "cache"
+
+    @property
+    def ablate(self) -> Path:
+        return self.root / "ablate"
 
 
 @dataclass(frozen=True)
