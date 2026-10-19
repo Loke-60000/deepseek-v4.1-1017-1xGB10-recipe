@@ -1,0 +1,100 @@
+diff --git a/zig/src/families/deepseek_v41/longpf.zig b/zig/src/families/deepseek_v41/longpf.zig
+index 6c82bf8..9458f73 100644
+--- a/zig/src/families/deepseek_v41/longpf.zig
++++ b/zig/src/families/deepseek_v41/longpf.zig
+@@ -182,7 +182,8 @@ pub fn window(s: *State, gpa: std.mem.Allocator, r: *run.Runner, k: anytype, sta
+     if (s.lazy) |*z| if (z.buf == null and names(cs, lazy_role)) try acquire(z, r);
+     const p = r.prof;
+     if (p) |x| x.beginPrefill();
+-    for (cs) |*c| {
++    const checked = run.syncEach();
++    for (cs, 0..) |*c, i| {
+         if (p) |x| try x.before(r.stream, c);
+         if (k) |kx| if (kx.blocks.items.len > 0 and readsExchange(c)) {
+             try attendBlocks(s, gpa, r, kx, start, c);
+@@ -190,6 +191,11 @@ pub fn window(s: *State, gpa: std.mem.Allocator, r: *run.Runner, k: anytype, sta
+             continue;
+         };
+         try r.issue(c);
++        // TF_DSV41_SYNC_EACH=1 (diagnosis): a prefill call's fault named as the decode windows' are
++        if (checked) r.stream.synchronize() catch |e| {
++            std.log.err("sync-each: prefill call {d}/{d} {s} faulted ({t})", .{ i, cs.len, c.name, e });
++            return e;
++        };
+         if (p) |x| try x.after(r.stream);
+     }
+     if (p) |x| try x.end(r.stream);
+diff --git a/zig/src/families/deepseek_v41/run.zig b/zig/src/families/deepseek_v41/run.zig
+index 2152a21..183f7c5 100644
+--- a/zig/src/families/deepseek_v41/run.zig
++++ b/zig/src/families/deepseek_v41/run.zig
+@@ -498,7 +498,7 @@ fn guardOn() bool {
+     return v;
+ }
+ 
+-fn syncEach() bool {
++pub fn syncEach() bool {
+     if (sync_each) |v| return v;
+     const v = if (std.c.getenv("TF_DSV41_SYNC_EACH")) |x| std.mem.eql(u8, std.mem.span(x), "1") else false;
+     sync_each = v;
+diff --git a/zig/src/families/deepseek_v41/serve_engine.zig b/zig/src/families/deepseek_v41/serve_engine.zig
+index 44ea2df..31d959b 100644
+--- a/zig/src/families/deepseek_v41/serve_engine.zig
++++ b/zig/src/families/deepseek_v41/serve_engine.zig
+@@ -291,7 +291,8 @@ pub const Served = struct {
+     }
+ };
+ 
+-/// The engine as served, with each finished reply's prompt and reply ids appended to TF_DSV41_TRACE_TOKENS (when set).
++/// The engine as served, with each finished reply's prompt and reply ids appended to TF_DSV41_TRACE_TOKENS (when set):
++/// replays for `tf-dsv41-m1 generate`, and the traffic a drafter is distilled on (`ablate` lines are the derisked id's).
+ pub const Recorder = struct {
+     gpa: Allocator,
+     io: std.Io,
+@@ -299,11 +300,9 @@ pub const Recorder = struct {
+     path: ?[]const u8,
+     mutex: std.Io.Mutex = .init,
+     live: std.AutoHashMapUnmanaged(api.Id, *Rec) = .empty,
+-    /// every recorded line so far (the file is rewritten whole: one reply at a time)
+-    log: std.ArrayList(u8) = .empty,
+ 
+     /// `sampling`: the request's own (seed included), so `tf-dsv41-m1 generate` replays a sampled reply as it was asked
+-    const Rec = struct { r: *Recorder, sink: api.Sink, prompt: []u32, sampling: ?api.Sampling = null, out: std.ArrayList(u32) = .empty, drafted: u64 = 0, structure: ?Structure = null };
++    const Rec = struct { r: *Recorder, sink: api.Sink, prompt: []u32, sampling: ?api.Sampling = null, out: std.ArrayList(u32) = .empty, drafted: u64 = 0, structure: ?Structure = null, ablate: bool = false };
+     /// a structured request's grammar (TF_DSV41_GRAMMAR), so `generate` replays it under the same grammar
+     const Structure = struct { kind: []const u8, text: []const u8 };
+ 
+@@ -315,7 +314,6 @@ pub const Recorder = struct {
+         var it = r.live.valueIterator();
+         while (it.next()) |x| r.drop(x.*);
+         r.live.deinit(r.gpa);
+-        r.log.deinit(r.gpa);
+     }
+ 
+     fn drop(r: *Recorder, x: *Rec) void {
+@@ -349,7 +347,7 @@ pub const Recorder = struct {
+     fn submit(ctx: *anyopaque, id: api.Id, request: *const api.Request, sink: api.Sink) api.SubmitError!void {
+         const r = self(ctx);
+         const x = r.gpa.create(Rec) catch return error.Busy;
+-        x.* = .{ .r = r, .sink = sink, .sampling = request.sampling, .prompt = r.gpa.dupe(u32, request.prompt) catch {
++        x.* = .{ .r = r, .sink = sink, .sampling = request.sampling, .ablate = request.ablate, .prompt = r.gpa.dupe(u32, request.prompt) catch {
+             r.gpa.destroy(x);
+             return error.Busy;
+         } };
+@@ -391,9 +389,13 @@ pub const Recorder = struct {
+     fn write(r: *Recorder, x: *const Rec) void {
+         var line: std.Io.Writer.Allocating = .init(r.gpa);
+         defer line.deinit();
+-        std.json.Stringify.value(.{ .prompt = x.prompt, .tokens = x.out.items, .drafted = x.drafted, .sampling = x.sampling, .structure = x.structure }, .{}, &line.writer) catch return;
++        std.json.Stringify.value(.{ .prompt = x.prompt, .tokens = x.out.items, .drafted = x.drafted, .sampling = x.sampling, .structure = x.structure, .ablate = x.ablate }, .{}, &line.writer) catch return;
+         line.writer.writeByte('\n') catch return;
+-        r.log.appendSlice(r.gpa, line.written()) catch return;
+-        std.Io.Dir.cwd().writeFile(r.io, .{ .sub_path = r.path.?, .data = r.log.items }) catch {};
++        // appended a reply at a time: the file grows with the traffic, the process does not
++        r.mutex.lockUncancelable(r.io);
++        defer r.mutex.unlock(r.io);
++        const file = std.Io.Dir.cwd().createFile(r.io, r.path.?, .{ .truncate = false }) catch return;
++        defer file.close(r.io);
++        file.writePositionalAll(r.io, line.written(), file.length(r.io) catch return) catch {};
+     }
+ };
