@@ -82,6 +82,8 @@ class Server:
             argv += ["--alias", alias]
         if self.profile.env.get("TF_DSV41_THINKING", "1") == "0":
             argv.append("--no-thinking")
+        if self.profile.env.get("TF_DSV41_DRAFTS", "1") == "0":
+            argv.append("--no-drafts")
         return argv
 
     def _container(self, detach: bool) -> DockerRun:
