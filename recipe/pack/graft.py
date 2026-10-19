@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import struct
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -192,5 +193,5 @@ class GraftBuilder:
             if name in self.dense.files:
                 shutil.copyfile(self.dense.download(name), self.out / name)
 
-    def _write_json(self, name: str, payload: dict[str, object]) -> None:
+    def _write_json(self, name: str, payload: Mapping[str, object]) -> None:
         (self.out / name).write_text(json.dumps(payload, indent=1) + "\n")
