@@ -1,0 +1,6 @@
+{
+  "extends": "base",
+  "env": {
+    "TF_DSV41_COLD": "/cold/measured-30g.json"
+  }
+}
