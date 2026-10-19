@@ -26,6 +26,7 @@ class ProfileTest(unittest.TestCase):
     def test_extends_overrides_and_removes(self):
         profile = Profile.load("child", self.dir, environ={})
         self.assertEqual((profile.slots, profile.context, profile.serve.port), (1, 10, 9))
+        self.assertEqual(profile.assets, "child")
         self.assertNotIn("TF_DSV41_IMAGES", profile.env)
 
     def test_environment_wins(self):

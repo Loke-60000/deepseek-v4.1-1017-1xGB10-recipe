@@ -29,7 +29,7 @@ class AssetBuilder:
     def __init__(self, settings: Settings, profile: Profile):
         self.job = ToolboxJob(settings)
         self.profile = profile
-        self.directory = settings.paths.assets / profile.name
+        self.directory = settings.paths.assets / profile.assets
 
     def build(self) -> Path:
         (self.directory / "aot").mkdir(parents=True, exist_ok=True)

@@ -21,7 +21,7 @@ class Server:
     def __init__(self, settings: Settings, profile: Profile):
         self.settings = settings
         self.profile = profile
-        self.assets = settings.paths.assets / profile.name
+        self.assets = settings.paths.assets / profile.assets
 
     def start(self) -> None:
         self.preflight()

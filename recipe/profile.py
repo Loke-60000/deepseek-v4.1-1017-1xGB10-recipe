@@ -28,6 +28,7 @@ class Profile:
     name: str
     serve: ServeOptions
     env: Mapping[str, str]
+    assets: str
 
     @classmethod
     def load(cls, name: str, directory: Path = PROFILES, environ: Mapping[str, str] | None = None) -> Profile:
@@ -35,7 +36,7 @@ class Profile:
         data = cls._resolve(name, directory, ())
         env = {key: value for key, value in data["env"].items() if value is not None}
         env |= {key: value for key, value in environ.items() if key.startswith(ENGINE_PREFIXES)}
-        return cls(name, ServeOptions.load(data["serve"], environ), env)
+        return cls(name, ServeOptions.load(data["serve"], environ), env, data.get("assets") or name)
 
     @classmethod
     def _resolve(cls, name: str, directory: Path, seen: tuple[str, ...]) -> dict[str, Any]:
@@ -44,8 +45,9 @@ class Profile:
         data: dict[str, Any] = json.loads((directory / f"{name}.json").read_text())
         parent = data.pop("extends", None)
         if parent is None:
-            return {"serve": data.get("serve", {}), "env": data.get("env", {})}
+            return {"serve": data.get("serve", {}), "env": data.get("env", {}), "assets": data.get("assets")}
         merged = cls._resolve(parent, directory, (*seen, name))
+        merged["assets"] = data.get("assets")
         merged["serve"] = merged["serve"] | data.get("serve", {})
         merged["env"] = merged["env"] | data.get("env", {})
         return merged

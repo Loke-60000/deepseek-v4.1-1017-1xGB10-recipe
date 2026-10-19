@@ -1,5 +1,6 @@
 {
   "extends": "bringup",
+  "assets": "bringup",
   "env": {
     "TF_DSV41_OWN_PREFILL": "0",
     "TF_DSV41_PREFILL": "full",
