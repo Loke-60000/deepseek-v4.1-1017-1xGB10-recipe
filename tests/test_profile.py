@@ -35,6 +35,11 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual((profile.slots, profile.serve.model_id, profile.serve.aliases), (8, "gl-zero", ("x", "y")))
         self.assertNotIn("HOME", profile.env)
 
+    def test_ablate_model_defaults_off(self):
+        self.assertEqual(Profile.load("child", self.dir, environ={}).serve.ablate_model, "")
+        profile = Profile.load("child", self.dir, environ={"DSV41_SERVE_ABLATE_MODEL": "gl-zero-skuld"})
+        self.assertEqual(profile.serve.ablate_model, "gl-zero-skuld")
+
     def test_cycle_is_refused(self):
         self.write("base", {"extends": "child"})
         with self.assertRaises(ValueError):

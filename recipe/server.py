@@ -5,6 +5,7 @@ import struct
 import subprocess
 from pathlib import Path
 
+from recipe.ablate.job import DIRECTIONS
 from recipe.docker import DockerRun, Mount
 from recipe.profile import Profile
 from recipe.settings import REPO_ROOT, Settings
@@ -41,6 +42,8 @@ class Server:
         for directory in (paths.pack, paths.engram, self.assets):
             if not directory.is_dir():
                 raise FileNotFoundError(f"missing directory {directory}")
+        if self.ablating and not (paths.ablate / DIRECTIONS).is_file():
+            raise FileNotFoundError(f"{paths.ablate / DIRECTIONS} is missing: run `dsv41 ablate`")
         missing = [name for name in REQUIRED_ASSETS if not (self.assets / name).exists()]
         if missing:
             hint = f"dsv41 assets --profile {self.profile.name}"
@@ -86,6 +89,17 @@ class Server:
             argv.append("--no-drafts")
         return argv
 
+    @property
+    def ablating(self) -> bool:
+        return bool(self.profile.serve.ablate_model)
+
+    def environment(self) -> dict[str, str]:
+        env = dict(self.profile.env)
+        if self.ablating:
+            env["TF_DSV41_ABLATE"] = f"/ablate/{DIRECTIONS}"
+            env["TENSORFOLD_ABLATE_MODEL"] = self.profile.serve.ablate_model
+        return env
+
     def _container(self, detach: bool) -> DockerRun:
         paths = self.settings.paths
         return DockerRun(
@@ -100,8 +114,9 @@ class Server:
                 Mount(paths.state / "sessions", "/sessions", read_only=False),
                 Mount(paths.cache, "/cache", read_only=False),
                 Mount(REPO_ROOT / "config" / "cold", "/cold"),
+                *([Mount(paths.ablate, "/ablate")] if self.ablating else []),
             ],
-            env=dict(self.profile.env),
+            env=self.environment(),
             name=self.CONTAINER,
             detach=detach,
             options=["--cap-add", "IPC_LOCK"],

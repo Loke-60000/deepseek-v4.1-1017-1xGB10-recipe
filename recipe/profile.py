@@ -19,6 +19,7 @@ class ServeOptions(Section):
     aliases: tuple[str, ...]
     port: int
     max_tokens: int
+    ablate_model: str = ""
 
 
 @dataclass(frozen=True)
