@@ -1,0 +1,33 @@
+diff --git a/zig/src/families/deepseek_v41/aot_needs.zig b/zig/src/families/deepseek_v41/aot_needs.zig
+index 0f76bd1..a947fd9 100644
+--- a/zig/src/families/deepseek_v41/aot_needs.zig
++++ b/zig/src/families/deepseek_v41/aot_needs.zig
+@@ -608,6 +608,20 @@ fn images(gpa: std.mem.Allocator, n: *Needs, cfg: *const Config, w: *const block
+     try log.flush();
+ }
+ 
++/// The fixtures hold a TP=2 rank's o groups; at TP=1 the one rank holds all of them, group g + half as wide as group g.
++fn singleRankGroups(a: std.mem.Allocator, w: *block.Widths, cfg: *const Config) !void {
++    const half = cfg.o_groups / 2;
++    var added: std.ArrayList(struct { []const u8, u32 }) = .empty;
++    var it = w.dense.iterator();
++    while (it.next()) |e| {
++        const at = std.mem.indexOf(u8, e.key_ptr.*, ".attn.wo_a.") orelse continue;
++        const g = std.fmt.parseInt(u32, e.key_ptr.*[at + ".attn.wo_a.".len ..], 10) catch continue;
++        if (g >= half) continue;
++        try added.append(a, .{ try std.fmt.allocPrint(a, "{s}.attn.wo_a.{d}", .{ e.key_ptr.*[0..at], g + half }), e.value_ptr.* });
++    }
++    for (added.items) |x| try w.dense.put(a, x[0], x[1]);
++}
++
+ /// `tf-dsv41-m1 aot-needs SIGS OUT [AOTDIR]`; error.AotIncomplete when AOTDIR lacks a variant (OUT is written first).
+ pub fn main(gpa: std.mem.Allocator, io: std.Io, sigs_path: []const u8, out_path: []const u8, aot_dir: ?[]const u8, log: *std.Io.Writer) !void {
+     const cwd = std.Io.Dir.cwd();
+@@ -627,6 +641,7 @@ pub fn main(gpa: std.mem.Allocator, io: std.Io, sigs_path: []const u8, out_path:
+     // DSpark's ingest main_proj (a DSpark block's width; its EXL3 linear is CUDA, as mdraft_test.zig sets it)
+     try w.dense.put(a, "dspark.main_proj", try w.k2("L40.attn.wkv"));
+     const sv = try Served.fromEnv();
++    if (sv.o.world == 1) try singleRankGroups(a, &w, &cfg);
+     try log.print("aot-needs: limit {d}, {d} slot(s), rows cap {d}, prefill rows {d}, index budget {d} MiB, R1 {}, drafts {}, slot drafts {} (group {d}), world {d}, pool {s}\n", .{ sv.o.limit, sv.slots, sv.cap, sv.o.prefill_rows, sv.o.index_budget >> 20, sv.o.r1, sv.drafts, sv.slot_drafts, sv.group, sv.o.world, if (sv.o.pool) |p| (if (p.split) "split" else "on") else "none (contiguous slot)" });
+     var n: Needs = .{ .gpa = gpa, .sigs = &parsed.value.kernels };
+     defer n.deinit();
