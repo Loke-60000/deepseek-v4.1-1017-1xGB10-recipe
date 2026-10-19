@@ -5,6 +5,7 @@ from pathlib import Path
 
 from recipe.ablate.job import DirectionJob
 from recipe.assets import AssetBuilder, EngramPacker
+from recipe.bench.golden import Golden
 from recipe.bench.runner import WorkloadRunner
 from recipe.bench.workload import Workload
 from recipe.image import Images
@@ -36,6 +37,10 @@ def main() -> None:
     calibrate.add_argument("--per-kind", type=int, default=12)
     ablate = commands.add_parser("ablate", help="extract the derisked pack's refusal directions")
     ablate.add_argument("--rank", type=int, default=1)
+    golden = commands.add_parser("golden", help="record or check greedy answers against a reference")
+    golden.add_argument("action", choices=["record", "check"])
+    golden.add_argument("--profile", default="base")
+    golden.add_argument("--file", type=Path, required=True)
     serve = commands.add_parser("serve", help="run the server for a profile")
     serve.add_argument("action", choices=["start", "stop", "check", "dry-run", "smoke"])
     serve.add_argument("--profile", default="base")
@@ -74,6 +79,16 @@ def main() -> None:
         print(WorkloadRunner.summary(outcomes))
     elif args.command == "ablate":
         print(DirectionJob(settings, rank=args.rank).build())
+    elif args.command == "golden":
+        serve_options = Profile.load(args.profile).serve
+        golden_set = Golden(Probe(serve_options.port, serve_options.model_id))
+        answers = golden_set.record()
+        if args.action == "record":
+            Golden.save(answers, args.file)
+            print(f"{args.file}: {len(answers)} answers")
+        else:
+            for agreement in Golden.compare(Golden.load(args.file), answers):
+                print(f"{agreement.kind:13s} shared prefix {agreement.shared_prefix:6.1%}")
     elif args.command == "serve":
         server = Server(settings, Profile.load(args.profile))
         actions = {"start": server.start, "stop": server.stop, "check": server.preflight}
