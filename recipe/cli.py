@@ -5,6 +5,7 @@ import argparse
 from recipe.assets import AssetBuilder, EngramPacker
 from recipe.image import Images
 from recipe.pack.graft import GraftBuilder
+from recipe.probe import Probe
 from recipe.profile import Profile
 from recipe.server import Server
 from recipe.settings import Settings
@@ -21,7 +22,7 @@ def main() -> None:
     assets.add_argument("--profile", default="base")
     commands.add_parser("engram", help="pack the Engram tables for one rank")
     serve = commands.add_parser("serve", help="run the server for a profile")
-    serve.add_argument("action", choices=["start", "stop", "check", "dry-run"])
+    serve.add_argument("action", choices=["start", "stop", "check", "dry-run", "smoke"])
     serve.add_argument("--profile", default="base")
     args = parser.parse_args()
 
@@ -43,6 +44,11 @@ def main() -> None:
         actions = {"start": server.start, "stop": server.stop, "check": server.preflight}
         if args.action == "dry-run":
             print(server.dry_run())
+        elif args.action == "smoke":
+            probe = Probe(server.profile.serve.port, server.profile.serve.model_id)
+            print("models:", ", ".join(probe.wait_ready()))
+            reply = probe.smoke()
+            print(f"17 * 23 -> {reply.text.strip()!r} ({reply.completion_tokens} tokens, {reply.seconds:.1f} s)")
         else:
             actions[args.action]()
 
