@@ -1,0 +1,175 @@
+diff --git a/zig/kernels/cuda/deepseek_v41/glue.cu b/zig/kernels/cuda/deepseek_v41/glue.cu
+index 50a1cb1..2d08acf 100644
+--- a/zig/kernels/cuda/deepseek_v41/glue.cu
++++ b/zig/kernels/cuda/deepseek_v41/glue.cu
+@@ -11,6 +11,7 @@
+ //   kit_logits   x = f32(bf16_rn(x)) in place                                         (pick.kit_logits)
+ //   positions    pos[0] = start; pos64[i] = start + i; lo[i] = 0                       (Win.make)
+ //   positions_dev  the same from a device start (a graphed window: staged before each replay)
++//   expert_hits  hits[pick[i]] += 1 for each routed id in [0, E): TF_DSV41_HITS' routing counts (pruned / shared ids skipped)
+ //   widen_f32    y = f32(x) of bf16 x                                                (q.float(): exact, the DSpark pass)
+ //   gather_cols  out[i][w c + j] = recv[w][i][j]                                      (permute(1, 0, 2).reshape)
+ //   carry        carry[j] = f32(src[row][j]), row = *accepted (device) or the host's   (the ratio-2 compressor carry)
+@@ -439,4 +440,12 @@ __global__ void __launch_bounds__(VS_NT) vs_choose_kernel(const float* __restric
+     out[r] = (long long)(0xFFFFFFFFull - (keys[best] & 0xFFFFFFFFull));
+ }
+ 
++__global__ void __launch_bounds__(256) expert_hits_kernel(const int* __restrict__ pick, long long n, int E,
++                                                          unsigned long long* __restrict__ hits) {
++    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (long long)gridDim.x * blockDim.x) {
++        const int e = pick[i];
++        if (e >= 0 && e < E) atomicAdd(hits + e, 1ull);
++    }
++}
++
+ }  // namespace dsv41_glue
+diff --git a/zig/src/families/deepseek_v41/block.zig b/zig/src/families/deepseek_v41/block.zig
+index a772713..4d5e5fe 100644
+--- a/zig/src/families/deepseek_v41/block.zig
++++ b/zig/src/families/deepseek_v41/block.zig
+@@ -75,6 +75,8 @@ pub const Options = struct {
+     /// TF_DSV41_EXPERT_TOPP (prod: 0.85; lossy). null: no pruning, and the router's tail (RG_TAIL) rounds the kit
+     /// weights and groups the experts itself, as it does for a DSpark block (moe.py: rule None)
+     expert_topp: ?f64 = 0.85,
++    /// TF_DSV41_HITS: count each backbone layer's routed picks into s.L<i>.ex.hits (one glue launch a MoE)
++    hits: bool = false,
+     /// M2a: after each block, its streams with the block's last post applied out of place (Python's Forward.trace),
+     /// handed to the glue step "trace" (one more launch a block; never in a served window)
+     trace: bool = false,
+diff --git a/zig/src/families/deepseek_v41/block_moe.zig b/zig/src/families/deepseek_v41/block_moe.zig
+index 993d216..cb8063f 100644
+--- a/zig/src/families/deepseek_v41/block_moe.zig
++++ b/zig/src/families/deepseek_v41/block_moe.zig
+@@ -210,6 +210,7 @@ pub fn moe(e: *E, L: u32) !void {
+         }
+         try e.glue("kit_weights", &.{ wts, try e.buf("L.wts16", .{}, .f32, &.{ n, slots }) });
+     }
++    if (e.o.hits and backbone) try e.glue("expert_hits", &.{ pick, .{ .i = ex.count }, try e.buf("s.L{d}.ex.hits", .{L}, .i64, &.{ex.count}) });
+     const group_rot = !grouped and e.o.router_group_rot and n <= 64 and slots <= 9 and Et <= 512 and D == 5120;
+     if (!grouped and !group_rot) try e.ext("tensorfold_exl3_experts_v1.group", &.{ pick, uids, ucount, members, .{ .i = n }, .{ .i = slots }, .{ .i = Et } });
+     const pre = try e.fmt("s.L{d}.ex", .{L});
+diff --git a/zig/src/families/deepseek_v41/block_prefill.zig b/zig/src/families/deepseek_v41/block_prefill.zig
+index 66a83f9..55cb70d 100644
+--- a/zig/src/families/deepseek_v41/block_prefill.zig
++++ b/zig/src/families/deepseek_v41/block_prefill.zig
+@@ -1143,6 +1143,7 @@ const Seg = struct {
+         const rs: i64 = if (n == 1) slots else topk;
+         const pk = try e.view(.{ .buf = "L.gm.pick" }, .i32, &.{ n, topk }, &.{ rs, 1 }, 0);
+         const w6 = try e.view(.{ .buf = "L.gm.wts" }, .f32, &.{ n, topk }, &.{ rs, 1 }, 0);
++        if (e.o.hits and e.cfg.isBackbone(L)) try e.glue("expert_hits", &.{ pick, .{ .i = e.cfg.experts }, try e.buf("s.L{d}.ex.hits", .{L}, .i64, &.{e.cfg.experts}) });
+         try e.glue("gm_picks", &.{ pick, wts, pk, w6 });
+         // x3gm._run_ragged: one row block (X / Y in the experts' scratch z, Xd in its xg), rot, a gate/up launch a
+         // gate width present, a down launch a down width present, upstream's combine
+diff --git a/zig/src/families/deepseek_v41/forward.zig b/zig/src/families/deepseek_v41/forward.zig
+index 755000e..20dbfc8 100644
+--- a/zig/src/families/deepseek_v41/forward.zig
++++ b/zig/src/families/deepseek_v41/forward.zig
+@@ -998,6 +998,8 @@ pub const Forward = struct {
+         if (std.mem.eql(u8, step, "kit_weights"))
+             return k.kitWeights(try r.tensorAddr(c.args[0].arg.t), try r.tensorAddr(c.args[1].arg.t), numel(c.args[0].arg.t));
+         if (std.mem.eql(u8, step, "kit_logits")) return k.kitLogits(try r.tensorAddr(c.args[0].arg.t), numel(c.args[0].arg.t));
++        if (std.mem.eql(u8, step, "expert_hits"))
++            return k.expertHits(try r.tensorAddr(c.args[0].arg.t), numel(c.args[0].arg.t), @intCast(c.args[1].arg.i), try r.tensorAddr(c.args[2].arg.t));
+         if (std.mem.eql(u8, step, "engram_rows")) {
+             if (g) |gr| return f.engramGathered(gr, r, c);
+             return f.engramRows(r, c);
+diff --git a/zig/src/families/deepseek_v41/kernels_ops.zig b/zig/src/families/deepseek_v41/kernels_ops.zig
+index eb2e3bf..10739ac 100644
+--- a/zig/src/families/deepseek_v41/kernels_ops.zig
++++ b/zig/src/families/deepseek_v41/kernels_ops.zig
+@@ -450,7 +450,7 @@ pub const Functions = struct {
+     kv_dedup: ?[4]cuda.Function = null,
+     kv_hist: ?[2]cuda.Function = null,
+     kv_gather: cuda.Function,
+-    glue: [10]cuda.Function, // glue.syms order
++    glue: [glue.syms.len]cuda.Function, // glue.syms order
+     /// glue.cu's DSpark candidates (TF_DSV41_DRAFT_GRAPHS); null in a fatbin built before it (the host's candidates)
+     ds_cands: ?cuda.Function = null,
+     /// glue.cu's device pick (TF_DSV41_GREEDY_GPU); null in a fatbin built before it (the pairs merged on the host)
+@@ -634,8 +634,9 @@ pub const glue = struct {
+         "_ZN10dsv41_glue12carry_kernelEPKtxPKiiiPf",
+         "_ZN10dsv41_glue20positions_dev_kernelEPKiiPiPxS2_",
+         "_ZN10dsv41_glue16widen_f32_kernelEPKtPfx",
++        "_ZN10dsv41_glue18expert_hits_kernelEPKixiPy",
+     };
+-    pub const Kind = enum(u4) { embed_send, embed_sum, cast_bf16, kit_weights, kit_logits, positions, gather_cols, carry, positions_dev, widen_f32 };
++    pub const Kind = enum(u4) { embed_send, embed_sum, cast_bf16, kit_weights, kit_logits, positions, gather_cols, carry, positions_dev, widen_f32, expert_hits };
+     /// DSpark's candidates (optional: resolved apart, so an older fatbin still loads)
+     pub const ds_cands_sym: [:0]const u8 = "_ZN10dsv41_glue15ds_cands_kernelEPKfxiiiPf";
+     /// the most candidates a rank (the kernel's shared sort)
+@@ -996,6 +997,17 @@ pub const Ops = struct {
+         try o.glueGo(.kit_weights, n, &a);
+     }
+ 
++    /// TF_DSV41_HITS: hits[pick[i]] += 1 for each of the n picks in [0, E) (u64 counters).
++    pub fn expertHits(o: Ops, pick: u64, n: usize, E: u32, hits: u64) !void {
++        if (n == 0) return;
++        var a: cuda.Args = .{};
++        a.add(pick);
++        a.add(@as(i64, @intCast(n)));
++        a.add(@as(c_int, @intCast(E)));
++        a.add(hits);
++        try o.glueGo(.expert_hits, n, &a);
++    }
++
+     /// pick.kit_logits in place: x = x.to(bf16).to(fp32) over n elements.
+     pub fn kitLogits(o: Ops, x: u64, n: usize) !void {
+         if (n == 0) return;
+diff --git a/zig/src/families/deepseek_v41/model.zig b/zig/src/families/deepseek_v41/model.zig
+index 04c91b6..2c5dd57 100644
+--- a/zig/src/families/deepseek_v41/model.zig
++++ b/zig/src/families/deepseek_v41/model.zig
+@@ -281,7 +281,7 @@ pub const Model = struct {
+         const topp: ?f64 = if (std.c.getenv("TF_DSV41_EXPERT_TOPP")) |v| try std.fmt.parseFloat(f64, std.mem.span(v)) else null;
+         // TF_DSV41_R1=1, or prod.env's eight R1 knobs by their Python names (prod_knobs.r1)
+         const r1 = @import("prod_knobs.zig").r1(&@import("prod_knobs.zig").env);
+-        m.f = fwd.Forward.init(gpa, &m.cfg, &m.widths, .{ .world = world, .expert_topp = topp, .r1 = r1, .taps = o.drafts }, &m.runner, comm);
++        m.f = fwd.Forward.init(gpa, &m.cfg, &m.widths, .{ .world = world, .expert_topp = topp, .r1 = r1, .taps = o.drafts, .hits = std.c.getenv("TF_DSV41_HITS") != null }, &m.runner, comm);
+         m.f.layers = backbone;
+         // the rope tables cover the limit + a prefill segment (dsv41_rope_tables.py --rows: the assets' rope.bin)
+         if (try contextEnv()) |c| {
+@@ -470,6 +470,32 @@ pub const Model = struct {
+         s.announceStop();
+     }
+ 
++    /// TF_DSV41_HITS=<file>: each backbone layer's routed picks since boot, `{"layers.<i>": [count per expert]}`.
++    pub fn writeHits(m: *Model) !void {
++        const path = std.mem.span(std.c.getenv("TF_DSV41_HITS") orelse return);
++        try m.ctx.makeCurrent();
++        try m.driver.check(m.driver.api.cuCtxSynchronize(), "cuCtxSynchronize");
++        const counts = try m.gpa.alloc(u64, m.cfg.experts);
++        defer m.gpa.free(counts);
++        var out: std.Io.Writer.Allocating = .init(m.gpa);
++        defer out.deinit();
++        const w = &out.writer;
++        try w.writeAll("{");
++        var written: usize = 0;
++        for (0..m.cfg.layers) |L| {
++            var nb: [32]u8 = undefined;
++            const addr = m.runner.addressOf(try std.fmt.bufPrint(&nb, "s.L{d}.ex.hits", .{L})) orelse continue;
++            try cuda.DeviceBuffer.download(.{ .d = &m.driver, .ptr = addr, .len = counts.len * 8 }, 0, std.mem.sliceAsBytes(counts));
++            try w.print("{s}\"layers.{d}\": [", .{ if (written == 0) "" else ", ", L });
++            for (counts, 0..) |c, i| try w.print("{s}{d}", .{ if (i == 0) "" else ",", c });
++            try w.writeAll("]");
++            written += 1;
++        }
++        try w.writeAll("}\n");
++        try std.Io.Dir.cwd().writeFile(m.io, .{ .sub_path = path, .data = out.written() });
++        std.log.info("dsv41 hits: {d} layers' routing counts written to {s}", .{ written, path });
++    }
++
+     pub fn close(m: *Model) void {
+         const gpa = m.gpa;
+         // the profile first, while the driver and its events are alive
+diff --git a/zig/src/families/deepseek_v41/serve_engine.zig b/zig/src/families/deepseek_v41/serve_engine.zig
+index dafcce2..bbea686 100644
+--- a/zig/src/families/deepseek_v41/serve_engine.zig
++++ b/zig/src/families/deepseek_v41/serve_engine.zig
+@@ -285,6 +285,7 @@ pub const Served = struct {
+         s.x.reportSpec();
+         s.x.deinit();
+         s.costs.deinit(gpa);
++        s.m.writeHits() catch |e| std.log.warn("dsv41 hits: not written ({t})", .{e});
+         s.m.close();
+         gpa.destroy(s);
+     }

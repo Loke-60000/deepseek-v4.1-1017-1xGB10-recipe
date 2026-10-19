@@ -1,0 +1,26 @@
+diff --git a/zig/src/core/safetensors.zig b/zig/src/core/safetensors.zig
+index ca7225f..9a686cc 100644
+--- a/zig/src/core/safetensors.zig
++++ b/zig/src/core/safetensors.zig
+@@ -27,8 +27,10 @@ pub const DType = enum {
+         };
+     }
+ 
++    /// FP8 entries (a native release's E4M3 weights and E8M0 scales) read as their bytes: no engine computes from them,
++    /// but a pack grafted onto a native one still carries them in its shards.
+     pub fn parse(text: []const u8) ?DType {
+-        const names = .{ .{ "BOOL", .bool }, .{ "U8", .u8 }, .{ "I8", .i8 }, .{ "U16", .u16 }, .{ "I16", .i16 }, .{ "F16", .f16 }, .{ "BF16", .bf16 }, .{ "U32", .u32 }, .{ "I32", .i32 }, .{ "F32", .f32 }, .{ "U64", .u64 }, .{ "I64", .i64 }, .{ "F64", .f64 } };
++        const names = .{ .{ "BOOL", .bool }, .{ "U8", .u8 }, .{ "I8", .i8 }, .{ "U16", .u16 }, .{ "I16", .i16 }, .{ "F16", .f16 }, .{ "BF16", .bf16 }, .{ "U32", .u32 }, .{ "I32", .i32 }, .{ "F32", .f32 }, .{ "U64", .u64 }, .{ "I64", .i64 }, .{ "F64", .f64 }, .{ "F8_E4M3", .u8 }, .{ "F8_E8M0", .u8 } };
+         inline for (names) |n| if (std.mem.eql(u8, text, n[0])) return n[1];
+         return null;
+     }
+@@ -231,3 +233,9 @@ test "text namespace filtering skips a vision rank-five entry without hiding inv
+     try std.testing.expect(h.contains("language_model.lm_head.weight"));
+     try std.testing.expectError(error.BadSafetensors, parseHeaderPrefix(arena.allocator(), json, 25, "language_model."));
+ }
++
++test "FP8 entries parse as their bytes" {
++    try std.testing.expectEqual(DType.u8, DType.parse("F8_E4M3").?);
++    try std.testing.expectEqual(DType.u8, DType.parse("F8_E8M0").?);
++    try std.testing.expect(DType.parse("F4") == null);
++}

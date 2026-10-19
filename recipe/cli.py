@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from recipe.assets import AssetBuilder, EngramPacker
 from recipe.image import Images
+from recipe.pack.cold import GIB, ColdPlanner, ExpertSizes
 from recipe.pack.graft import GraftBuilder
 from recipe.probe import Probe
 from recipe.profile import Profile
@@ -21,6 +23,11 @@ def main() -> None:
     assets = commands.add_parser("assets", help="build a profile's Triton, RoPE and Engram host assets")
     assets.add_argument("--profile", default="base")
     commands.add_parser("engram", help="pack the Engram tables for one rank")
+    cold = commands.add_parser("cold", help="plan a cold expert set from routing hits")
+    cold.add_argument("--gib", type=float, required=True, help="trellis bytes to leave in mappings")
+    cold.add_argument("--hits", type=Path, help="TF_DSV41_HITS output; without it, --prior's experts go first")
+    cold.add_argument("--prior", type=Path, default=Path("config/cold/vllm-recipe-1380.json"))
+    cold.add_argument("--out", type=Path, required=True)
     serve = commands.add_parser("serve", help="run the server for a profile")
     serve.add_argument("action", choices=["start", "stop", "check", "dry-run", "smoke"])
     serve.add_argument("--profile", default="base")
@@ -39,6 +46,18 @@ def main() -> None:
         print(AssetBuilder(settings, Profile.load(args.profile)).build())
     elif args.command == "engram":
         print(EngramPacker(settings).build())
+    elif args.command == "cold":
+        sizes = ExpertSizes.of_pack(settings.paths.pack)
+        if args.hits:
+            hits = ColdPlanner.read_hits(args.hits)
+        else:
+            prior = ColdPlanner.read_set(args.prior)
+            hits = {expert: int(expert not in prior) for expert in sizes.sizes}
+        planner = ColdPlanner(sizes, hits)
+        plan = planner.plan(int(args.gib * GIB))
+        plan.write(args.out)
+        share = f", {planner.share_of_picks(plan):.2%} of measured picks" if args.hits else ""
+        print(f"{args.out}: {len(plan.experts)} experts, {plan.bytes / GIB:.2f} GiB of {sizes.total / GIB:.2f}{share}")
     elif args.command == "serve":
         server = Server(settings, Profile.load(args.profile))
         actions = {"start": server.start, "stop": server.stop, "check": server.preflight}
