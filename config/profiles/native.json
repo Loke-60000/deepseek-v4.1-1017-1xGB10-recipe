@@ -5,6 +5,6 @@
     "TF_DSV41_PF_4K_MEMORY_OK": "1",
     "TF_DSV41_PREFILL_CHUNK": "4096",
     "TF_DSV41_PREFILL_ROWS": "4096",
-    "TF_DSV41_COLD": "/cold/measured-20g.json"
+    "TF_DSV41_COLD": "/cold/measured-25g.json"
   }
 }
