@@ -1,0 +1,82 @@
+diff --git a/zig/kernels/cuda/deepseek_v41/x3gm.cu b/zig/kernels/cuda/deepseek_v41/x3gm.cu
+index f4fb5aa..d35ad2f 100644
+--- a/zig/kernels/cuda/deepseek_v41/x3gm.cu
++++ b/zig/kernels/cuda/deepseek_v41/x3gm.cu
+@@ -513,8 +513,8 @@ __device__ __forceinline__ void gm2_item(const Args& a, unsigned char* smem, con
+ 
+ // The widths a v2 launch dispatches (K2S of x3gm.py) and, per width, the ring depth: the configuration's, cut while
+ // the width's ring would cost a configuration that holds two CTAs an SM at 2 bits its second CTA (data movement only)
+-#define GM2_WIDTHS(X) X(3) X(4) X(5) X(6) X(7) X(8) X(10)
+-constexpr int GM2_NWIDTHS = 7;
++#define GM2_WIDTHS(X) X(2) X(3) X(4) X(5) X(6) X(7) X(8) X(10)
++constexpr int GM2_NWIDTHS = 8;
+ template <int MATS, int XM, int K2, int MTL, int NG, int KS, int NSA, int NGR>
+ struct Ring2 {
+     static constexpr bool fits2(int n) {
+@@ -646,7 +646,7 @@ __global__ void __launch_bounds__(32) dequant_kernel(const uint32_t* __restrict_
+ 
+ #ifndef DSV41_X3GM_NO_INSTANCES
+ // The instantiations x3gm's bindings launch: gate/up (shared input XM 1, own inputs XM 2) at GM_GU0-5,
+-// down at GM_DN0-4, every width K2 3-8, 10; the rotation (bf16 / fp16 input, one or two matrices); dequant.
++// down at GM_DN0-4, every width K2 2-8, 10; the rotation (bf16 / fp16 input, one or two matrices); dequant.
+ #define DSV41_X3GM_GU(XM, K2, CFG) template __global__ void dsv41_x3gm::gm_kernel<2, XM, K2, CFG>(const dsv41_x3gm::Args);
+ #define DSV41_X3GM_DN(K2, CFG) template __global__ void dsv41_x3gm::gm_kernel<1, 1, K2, CFG>(const dsv41_x3gm::Args);
+ // v2 (gm2_kernel: every width in one launch), the tiles launch2 takes: gate/up GM_GU0 / GM_GU1 at either
+@@ -656,6 +656,23 @@ template __global__ void dsv41_x3gm::gm2_kernel<2, 1, GM_GU1>(const dsv41_x3gm::
+ template __global__ void dsv41_x3gm::gm2_kernel<2, 2, GM_GU0>(const dsv41_x3gm::Args);
+ template __global__ void dsv41_x3gm::gm2_kernel<2, 2, GM_GU1>(const dsv41_x3gm::Args);
+ template __global__ void dsv41_x3gm::gm2_kernel<1, 1, GM_DN0>(const dsv41_x3gm::Args);
++DSV41_X3GM_GU(1, 2, GM_GU0)
++DSV41_X3GM_GU(1, 2, GM_GU1)
++DSV41_X3GM_GU(1, 2, GM_GU2)
++DSV41_X3GM_GU(1, 2, GM_GU3)
++DSV41_X3GM_GU(1, 2, GM_GU4)
++DSV41_X3GM_GU(1, 2, GM_GU5)
++DSV41_X3GM_GU(2, 2, GM_GU0)
++DSV41_X3GM_GU(2, 2, GM_GU1)
++DSV41_X3GM_GU(2, 2, GM_GU2)
++DSV41_X3GM_GU(2, 2, GM_GU3)
++DSV41_X3GM_GU(2, 2, GM_GU4)
++DSV41_X3GM_GU(2, 2, GM_GU5)
++DSV41_X3GM_DN(2, GM_DN0)
++DSV41_X3GM_DN(2, GM_DN1)
++DSV41_X3GM_DN(2, GM_DN2)
++DSV41_X3GM_DN(2, GM_DN3)
++DSV41_X3GM_DN(2, GM_DN4)
+ DSV41_X3GM_GU(1, 3, GM_GU0)
+ DSV41_X3GM_GU(1, 3, GM_GU1)
+ DSV41_X3GM_GU(1, 3, GM_GU2)
+@@ -781,6 +798,7 @@ DSV41_X3GM_ROT(__nv_bfloat16, 1)
+ DSV41_X3GM_ROT(__nv_bfloat16, 2)
+ DSV41_X3GM_ROT(half, 1)
+ DSV41_X3GM_ROT(half, 2)
++template __global__ void dsv41_x3gm::dequant_kernel<2>(const uint32_t*, half*, int);
+ template __global__ void dsv41_x3gm::dequant_kernel<3>(const uint32_t*, half*, int);
+ template __global__ void dsv41_x3gm::dequant_kernel<4>(const uint32_t*, half*, int);
+ template __global__ void dsv41_x3gm::dequant_kernel<5>(const uint32_t*, half*, int);
+diff --git a/zig/src/families/deepseek_v41/gm2pf.zig b/zig/src/families/deepseek_v41/gm2pf.zig
+index 59c6b77..fe3dd9c 100644
+--- a/zig/src/families/deepseek_v41/gm2pf.zig
++++ b/zig/src/families/deepseek_v41/gm2pf.zig
+@@ -38,7 +38,7 @@ fn gu2On(e: *const E, r: Routed) bool {
+ }
+ pub const cfg_dn: i64 = 0;
+ /// x3gm.K2S: the widths gm2_kernel dispatches (x3gm.supported refuses a block with any other)
+-pub const k2s: u32 = (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 10);
++pub const k2s: u32 = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 10);
+ 
+ pub const Get = *const fn ([]const u8) ?[]const u8;
+ 
+diff --git a/zig/src/families/deepseek_v41/kernels_exl3.zig b/zig/src/families/deepseek_v41/kernels_exl3.zig
+index 78519e5..a213c07 100644
+--- a/zig/src/families/deepseek_v41/kernels_exl3.zig
++++ b/zig/src/families/deepseek_v41/kernels_exl3.zig
+@@ -81,7 +81,7 @@ const up_sym = struct {
+ };
+ 
+ /// x3gm's widths (x3gm.K2S) and tile tables (MTL, NG, KS, NSA, NGR) by configuration id (x3gm.cu GM_GU* / GM_DN*).
+-pub const gm_k2s = [_]u32{ 3, 4, 5, 6, 7, 8, 10 };
++pub const gm_k2s = [_]u32{ 2, 3, 4, 5, 6, 7, 8, 10 };
+ pub const gu_tiles = [_][5]u32{ .{ 2, 8, 4, 3, 4 }, .{ 2, 8, 2, 4, 4 }, .{ 1, 16, 2, 4, 4 }, .{ 1, 16, 4, 3, 4 }, .{ 2, 16, 2, 3, 4 }, .{ 2, 8, 2, 6, 4 } };
+ pub const dn_tiles = [_][5]u32{ .{ 2, 8, 4, 4, 8 }, .{ 1, 8, 4, 4, 8 }, .{ 1, 16, 4, 4, 8 }, .{ 1, 16, 2, 6, 8 }, .{ 2, 16, 4, 3, 16 } };
+ /// sm_121's opt-in dynamic shared memory a CTA (x3gm.SMEM_MAX).

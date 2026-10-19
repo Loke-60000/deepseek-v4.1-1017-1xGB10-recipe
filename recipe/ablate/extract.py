@@ -1,9 +1,9 @@
 """Refusal directions behind an abliterated pack, from its edited residual writers (run in the toolbox image: torch).
 
 An abliteration edits a writer W (rows = residual dimensions) to W' = W - R diag(lam) R^T W. Given both packs'
-native FP8 copies of the writers, the edits' column space is recovered from the Gram matrix of the differences as an
-orthonormal Q (any basis of it), and each layer's edit as the k x k operator A with W' - W = -Q A Q^T W (least
-squares).
+native FP8 copies of the writers, each layer's edit is recovered on its own: its column space from the Gram matrix
+of the difference as an orthonormal Q_l (any basis of it), its strength as the k x k operator A_l with
+W' - W = -Q_l A_l Q_l^T W (least squares).
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ class Directions:
 
 
 class DirectionExtractor:
-    """Recovers R and each layer's strengths from the `attn.wo_b` writers that differ between two packs."""
+    """Recovers each layer's edit directions and strengths from the `attn.wo_b` writers that differ between packs."""
 
     def __init__(self, base: Path, edited: HubRepo, layers: list[int], rank: int):
         self.base_index = json.loads((base / "model.safetensors.index.json").read_text())["weight_map"]
@@ -104,24 +104,24 @@ class DirectionExtractor:
         return original, edited - original
 
     def run(self) -> Directions:
-        gram: torch.Tensor | None = None
-        for layer in self.layers:
-            _, delta = self.writer(layer)
-            gram = delta @ delta.T if gram is None else gram + delta @ delta.T
-            print(f"layer {layer}: |dW| {delta.norm():.4f}", flush=True)
-        assert gram is not None
-        values, vectors = torch.linalg.eigh(gram.double())
-        order = torch.argsort(values, descending=True)
-        top = vectors[:, order[: self.rank]].float()
-        mix = torch.zeros(max(self.layers) + 1, self.rank, self.rank)
-        captured = []
+        count = max(self.layers) + 1
+        directions = torch.zeros(count, self.rank, 0)
+        mix = torch.zeros(count, self.rank, self.rank)
+        captured, spectrum = [], []
         for layer in self.layers:
             original, delta = self.writer(layer)
-            along, moved = top.T @ original, top.T @ delta
+            values, vectors = torch.linalg.eigh((delta @ delta.T).double())
+            order = torch.argsort(values, descending=True)
+            q = vectors[:, order[: self.rank]].float()
+            if directions.shape[2] == 0:
+                directions = torch.zeros(count, self.rank, q.shape[0])
+            along, moved = q.T @ original, q.T @ delta
+            directions[layer] = q.T
             mix[layer] = -moved @ along.T @ torch.linalg.inv(along @ along.T)
             captured.append(float(moved.norm() ** 2 / delta.norm() ** 2))
-        spectrum = [float(v) for v in values[order[: 2 * self.rank + 2]]]
-        return Directions(top.T.contiguous(), mix, captured, spectrum)
+            spectrum.append(float(values[order[0]] / values.clamp(min=0).sum()))
+            print(f"layer {layer}: |dW| {delta.norm():.4f}, captured {captured[-1]:.4f}", flush=True)
+        return Directions(directions, mix, captured, spectrum)
 
 
 def main() -> None:
@@ -130,7 +130,7 @@ def main() -> None:
     parser.add_argument("--edited", required=True)
     parser.add_argument("--revision", default="main")
     parser.add_argument("--layers", default="14-39")
-    parser.add_argument("--rank", type=int, default=4)
+    parser.add_argument("--rank", type=int, default=1)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     lo, hi = (int(x) for x in args.layers.split("-"))
@@ -139,8 +139,8 @@ def main() -> None:
     )
     found = extractor.run()
     found.save(args.out, lo)
-    print("eigenvalues:", ", ".join(f"{v:.3e}" for v in found.spectrum))
-    print("captured by span(R) per layer:", ", ".join(f"{c:.3f}" for c in found.captured))
+    print("top direction's share of each layer's edit:", ", ".join(f"{v:.3f}" for v in found.spectrum))
+    print("captured by each layer's span:", ", ".join(f"{c:.3f}" for c in found.captured))
     strengths = torch.linalg.eigvalsh((found.mix_attn[lo:] + found.mix_attn[lo:].transpose(1, 2)) / 2)
     per_layer = "; ".join(", ".join(f"{x:.3f}" for x in row) for row in strengths)
     print("edit strengths per layer (eigenvalues of A):", per_layer)

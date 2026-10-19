@@ -12,7 +12,7 @@ DIRECTIONS = "derisked.safetensors"
 class DirectionJob:
     """Extracts the derisked pack's refusal directions in the toolbox image, against the local experts pack."""
 
-    def __init__(self, settings: Settings, rank: int = 4):
+    def __init__(self, settings: Settings, rank: int = 1):
         self.settings = settings
         self.rank = rank
         sources = settings.sources

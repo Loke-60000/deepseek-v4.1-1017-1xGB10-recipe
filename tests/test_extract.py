@@ -23,17 +23,17 @@ class ExtractTest(unittest.TestCase):
     def test_recovers_directions_and_strengths(self):
         torch.manual_seed(0)
         d, n = 64, 96
-        r = torch.linalg.qr(torch.randn(d, 2))[0]
         lams = {5: torch.tensor([1.2, 0.4]), 6: torch.tensor([0.9, 0.7])}
+        bases = {layer: torch.linalg.qr(torch.randn(d, 2))[0] for layer in lams}
         writers = {}
         for layer, lam in lams.items():
             w = torch.randn(d, n)
-            edited = w - r @ torch.diag(lam) @ r.T @ w
+            edited = w - bases[layer] @ torch.diag(lam) @ bases[layer].T @ w
             writers[layer] = (w, edited - w)
         found = FakeExtractor(writers, rank=2).run()
-        q = found.directions.T
         for layer, lam in lams.items():
-            want = r @ torch.diag(lam) @ r.T
+            q = found.directions[layer].T
+            want = bases[layer] @ torch.diag(lam) @ bases[layer].T
             got = q @ found.mix_attn[layer] @ q.T
             self.assertTrue(torch.allclose(got, want, atol=1e-4))
         self.assertTrue(all(c > 0.9999 for c in found.captured))

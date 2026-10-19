@@ -35,7 +35,7 @@ def main() -> None:
     calibrate.add_argument("--profile", default="base")
     calibrate.add_argument("--per-kind", type=int, default=12)
     ablate = commands.add_parser("ablate", help="extract the derisked pack's refusal directions")
-    ablate.add_argument("--rank", type=int, default=4)
+    ablate.add_argument("--rank", type=int, default=1)
     serve = commands.add_parser("serve", help="run the server for a profile")
     serve.add_argument("action", choices=["start", "stop", "check", "dry-run", "smoke"])
     serve.add_argument("--profile", default="base")
