@@ -1,0 +1,27 @@
+[project]
+name = "dsv41-recipe"
+version = "0.1.0"
+description = "DeepSeek-V4.1-Flash-1017 on one DGX Spark with TensorFold"
+requires-python = ">=3.12"
+dependencies = ["huggingface_hub>=1.0"]
+
+[project.scripts]
+dsv41 = "recipe.cli:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["recipe*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
