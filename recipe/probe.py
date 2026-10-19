@@ -37,17 +37,28 @@ class Probe:
                 time.sleep(every)
 
     def chat(self, content: str | list[dict[str, Any]], max_tokens: int = 256, model: str | None = None) -> Reply:
+        return self.complete([{"role": "user", "content": content}], max_tokens, model=model)
+
+    def complete(
+        self,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+        extra: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> Reply:
         body = {
             "model": model or self.model,
-            "messages": [{"role": "user", "content": content}],
+            "messages": messages,
             "temperature": 0,
             "max_tokens": max_tokens,
             "reasoning_effort": "low",
+            **(extra or {}),
         }
         started = time.monotonic()
         reply = self._request("POST", "/chat/completions", body)
+        message = reply["choices"][0]["message"]
         return Reply(
-            text=reply["choices"][0]["message"].get("content") or "",
+            text=message.get("content") or json.dumps(message.get("tool_calls") or []),
             completion_tokens=reply.get("usage", {}).get("completion_tokens", 0),
             seconds=time.monotonic() - started,
         )

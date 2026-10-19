@@ -4,6 +4,8 @@ import argparse
 from pathlib import Path
 
 from recipe.assets import AssetBuilder, EngramPacker
+from recipe.bench.runner import WorkloadRunner
+from recipe.bench.workload import Workload
 from recipe.image import Images
 from recipe.pack.cold import GIB, ColdPlanner, ExpertSizes
 from recipe.pack.graft import GraftBuilder
@@ -28,6 +30,9 @@ def main() -> None:
     cold.add_argument("--hits", type=Path, help="TF_DSV41_HITS output; without it, --prior's experts go first")
     cold.add_argument("--prior", type=Path, default=Path("config/cold/vllm-recipe-1380.json"))
     cold.add_argument("--out", type=Path, required=True)
+    calibrate = commands.add_parser("calibrate", help="send the routing calibration workload to a running server")
+    calibrate.add_argument("--profile", default="base")
+    calibrate.add_argument("--per-kind", type=int, default=12)
     serve = commands.add_parser("serve", help="run the server for a profile")
     serve.add_argument("action", choices=["start", "stop", "check", "dry-run", "smoke"])
     serve.add_argument("--profile", default="base")
@@ -58,6 +63,12 @@ def main() -> None:
         plan.write(args.out)
         share = f", {planner.share_of_picks(plan):.2%} of measured picks" if args.hits else ""
         print(f"{args.out}: {len(plan.experts)} experts, {plan.bytes / GIB:.2f} GiB of {sizes.total / GIB:.2f}{share}")
+    elif args.command == "calibrate":
+        serve_options = Profile.load(args.profile).serve
+        requests = list(Workload().requests(args.per_kind))
+        print(Workload.describe(requests))
+        outcomes = WorkloadRunner(Probe(serve_options.port, serve_options.model_id)).run(requests)
+        print(WorkloadRunner.summary(outcomes))
     elif args.command == "serve":
         server = Server(settings, Profile.load(args.profile))
         actions = {"start": server.start, "stop": server.stop, "check": server.preflight}
