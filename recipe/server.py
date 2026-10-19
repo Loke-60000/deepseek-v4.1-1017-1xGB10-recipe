@@ -7,7 +7,7 @@ from pathlib import Path
 
 from recipe.docker import DockerRun, Mount
 from recipe.profile import Profile
-from recipe.settings import Settings
+from recipe.settings import REPO_ROOT, Settings
 
 ROPE_MARGIN = 2048
 REQUIRED_ASSETS = ("rope.bin", "engram-host.bin", "aot/aot.json", "sigs.json")
@@ -97,6 +97,7 @@ class Server:
                 Mount(paths.state, "/state", read_only=False),
                 Mount(paths.state / "sessions", "/sessions", read_only=False),
                 Mount(paths.cache, "/cache", read_only=False),
+                Mount(REPO_ROOT / "config" / "cold", "/cold"),
             ],
             env=dict(self.profile.env),
             name=self.CONTAINER,

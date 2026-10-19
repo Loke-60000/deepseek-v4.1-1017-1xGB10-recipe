@@ -1,0 +1,449 @@
+diff --git a/zig/src/cuda/abi.zig b/zig/src/cuda/abi.zig
+index a383949..de61d8c 100644
+--- a/zig/src/cuda/abi.zig
++++ b/zig/src/cuda/abi.zig
+@@ -36,7 +36,9 @@ pub const DeviceAttribute = enum(c_int) {
+     compute_capability_major = 75,
+     compute_capability_minor = 76,
+     max_shared_memory_per_multiprocessor = 81,
++    pageable_memory_access = 88,
+     max_shared_memory_per_block_optin = 97,
++    pageable_memory_access_uses_host_page_tables = 100,
+     virtual_memory_management_supported = 102,
+     gpu_direct_rdma_with_cuda_vmm_supported = 126,
+ };
+diff --git a/zig/src/families/deepseek_v41/cold.zig b/zig/src/families/deepseek_v41/cold.zig
+new file mode 100644
+index 0000000..3ac2056
+--- /dev/null
++++ b/zig/src/families/deepseek_v41/cold.zig
+@@ -0,0 +1,122 @@
++//! TF_DSV41_COLD=<json>: rarely routed experts left in their prepared file and read by the GPU through a read-only
++//! mapping (GB10's GPU walks the host page tables, ATS), the rest uploaded compacted. The page cache holds the cold
++//! pages; under memory pressure the kernel may drop them and the next read comes from NVMe.
++//! The set is `{"layers.<i>": [expert, ...]}`, backbone layers only; DSpark's experts stay resident.
++
++const std = @import("std");
++const cuda = @import("cuda");
++const exl3 = @import("exl3.zig");
++
++pub const Set = struct {
++    arena: std.heap.ArenaAllocator,
++    layers: std.AutoHashMapUnmanaged(u32, []const u32) = .empty,
++
++    /// The set TF_DSV41_COLD names, or null when unset.
++    pub fn fromEnv(gpa: std.mem.Allocator, io: std.Io) !?Set {
++        const path = std.mem.trim(u8, std.mem.span(std.c.getenv("TF_DSV41_COLD") orelse return null), " ");
++        if (path.len == 0) return null;
++        var s: Set = .{ .arena = .init(gpa) };
++        errdefer s.arena.deinit();
++        const a = s.arena.allocator();
++        try s.parse(a, try std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(1 << 24)));
++        return s;
++    }
++
++    fn parse(s: *Set, a: std.mem.Allocator, text: []const u8) !void {
++        const root = try std.json.parseFromSliceLeaky(std.json.Value, a, text, .{});
++        if (root != .object) return error.BadColdSet;
++        var it = root.object.iterator();
++        while (it.next()) |e| {
++            if (!std.mem.startsWith(u8, e.key_ptr.*, "layers.") or e.value_ptr.* != .array) return error.BadColdSet;
++            const layer = try std.fmt.parseInt(u32, e.key_ptr.*["layers.".len..], 10);
++            const ids = try a.alloc(u32, e.value_ptr.array.items.len);
++            for (e.value_ptr.array.items, ids) |v, *id| {
++                if (v != .integer or v.integer < 0) return error.BadColdSet;
++                id.* = @intCast(v.integer);
++            }
++            try s.layers.put(a, layer, ids);
++        }
++    }
++
++    pub fn deinit(s: *Set) void {
++        s.arena.deinit();
++    }
++
++    pub fn of(s: *const Set, layer: u32) ?[]const u32 {
++        return s.layers.get(layer);
++    }
++};
++
++/// A prepared file mapped read-only, its pages asked for ahead.
++pub const Mapping = struct {
++    bytes: []align(std.heap.page_size_min) const u8,
++
++    pub fn open(io: std.Io, path: []const u8) !Mapping {
++        const file = try std.Io.Dir.cwd().openFile(io, path, .{});
++        defer file.close(io);
++        const len: usize = @intCast(try file.length(io));
++        const bytes = try std.posix.mmap(null, len, .{ .READ = true }, .{ .TYPE = .SHARED }, file.handle, 0);
++        std.posix.madvise(bytes.ptr, bytes.len, std.posix.MADV.WILLNEED) catch {};
++        return .{ .bytes = bytes };
++    }
++
++    pub fn base(m: *const Mapping) u64 {
++        return @intFromPtr(m.bytes.ptr);
++    }
++
++    pub fn close(m: *Mapping) void {
++        std.posix.munmap(m.bytes);
++    }
++};
++
++/// One layer's cold experts, where its prepared file is mapped and each tensor's payload sits in it.
++pub const Layer = struct {
++    ids: []const u32,
++    layouts: [3]*const exl3.Layout,
++    base: u64,
++    offsets: *const std.StringHashMapUnmanaged(u64),
++
++    /// The layout of the routed projection `name` holds ("L3.moe.w2.data" / ".trellis"), else null.
++    pub fn layout(c: *const Layer, name: []const u8) ?*const exl3.Layout {
++        if (!std.mem.endsWith(u8, name, ".data") and !std.mem.endsWith(u8, name, ".trellis")) return null;
++        const at = std.mem.indexOf(u8, name, ".moe.w") orelse return null;
++        return switch (name[at + ".moe.w".len]) {
++            '1' => c.layouts[0],
++            '2' => c.layouts[1],
++            '3' => c.layouts[2],
++            else => null,
++        };
++    }
++};
++
++/// Expert `e`'s trellis bytes in a projection's buffer.
++pub fn expertBytes(lay: *const exl3.Layout, e: usize) usize {
++    const end = if (e + 1 < lay.count()) lay.offsets[e + 1] else lay.elements;
++    return @intCast(2 * (end - lay.offsets[e]));
++}
++
++/// The GPU must read pageable host memory through the host's page tables (GB10, Grace); anything else refuses the set.
++pub fn check(ctx: *const cuda.Context) !void {
++    if (try ctx.attribute(.pageable_memory_access) == 0) return error.NoPageableMemoryAccess;
++    if (try ctx.attribute(.pageable_memory_access_uses_host_page_tables) == 0) return error.NoPageableMemoryAccess;
++}
++
++test "a cold set parses the vLLM recipe's layer map" {
++    var s: Set = .{ .arena = .init(std.testing.allocator) };
++    defer s.deinit();
++    try s.parse(s.arena.allocator(), "{\"layers.0\": [6, 7], \"layers.39\": []}");
++    try std.testing.expectEqualSlices(u32, &.{ 6, 7 }, s.of(0).?);
++    try std.testing.expectEqual(@as(usize, 0), s.of(39).?.len);
++    try std.testing.expect(s.of(1) == null);
++    try std.testing.expectError(error.BadColdSet, s.parse(s.arena.allocator(), "{\"experts.0\": [1]}"));
++}
++
++test "a routed projection's name picks its layout" {
++    var lays: [3]exl3.Layout = undefined;
++    const offsets: std.StringHashMapUnmanaged(u64) = .empty;
++    const c: Layer = .{ .ids = &.{}, .layouts = .{ &lays[0], &lays[1], &lays[2] }, .base = 0, .offsets = &offsets };
++    try std.testing.expect(c.layout("L3.moe.w2.data") == &lays[1]);
++    try std.testing.expect(c.layout("L3.moe.w3.trellis") == &lays[2]);
++    try std.testing.expect(c.layout("L3.moe.w1.suh") == null);
++    try std.testing.expect(c.layout("L3.moe.shared.0.w1.trellis") == null);
++}
+diff --git a/zig/src/families/deepseek_v41/deepseek_v41.zig b/zig/src/families/deepseek_v41/deepseek_v41.zig
+index b87c6a1..c2155f3 100644
+--- a/zig/src/families/deepseek_v41/deepseek_v41.zig
++++ b/zig/src/families/deepseek_v41/deepseek_v41.zig
+@@ -38,6 +38,8 @@ test {
+     _ = @import("round_graph.zig");
+     // the CUDA port: prepared weight folders (TF_DSV41_PREPARED)
+     _ = @import("prepared.zig");
++    // the CUDA port: cold experts read through prepared-file mappings (TF_DSV41_COLD)
++    _ = @import("cold.zig");
+     _ = @import("boot_mem.zig");
+     _ = @import("lockstep.zig");
+ }
+diff --git a/zig/src/families/deepseek_v41/forms.zig b/zig/src/families/deepseek_v41/forms.zig
+index 809cfed..85c6842 100644
+--- a/zig/src/families/deepseek_v41/forms.zig
++++ b/zig/src/families/deepseek_v41/forms.zig
+@@ -84,13 +84,21 @@ pub fn build(a: std.mem.Allocator, s: *const Source, role: []const u8) !?[]const
+         // each expert's trellis address: the ragged data's base + its offset; the shared expert's own tensor last. A
+         // DSpark block stores its routed experts as one uniform stack ("<w>.trellis", the experts back to back): the
+         // same offsets from its base
+-        const data = s.weights.get(try std.fmt.allocPrint(a, "{s}.moe.{s}.data", .{ layer, w })) orelse uniform: {
+-            const t = s.weights.get(try std.fmt.allocPrint(a, "{s}.moe.{s}.trellis", .{ layer, w })) orelse return error.MissingWeight;
++        const ragged = try std.fmt.allocPrint(a, "{s}.moe.{s}.data", .{ layer, w });
++        const stack = try std.fmt.allocPrint(a, "{s}.moe.{s}.trellis", .{ layer, w });
++        const sh = s.weights.get(try std.fmt.allocPrint(a, "{s}.trellis", .{shared})) orelse return error.MissingWeight;
++        const out = try a.alloc(u8, 8 * (E + 1));
++        // TF_DSV41_COLD (cold.zig): some experts live in a mapping, every address recorded at upload
++        if (s.weights.experts.get(ragged) orelse s.weights.experts.get(stack)) |addrs| {
++            for (0..E) |e| std.mem.writeInt(u64, out[8 * e ..][0..8], addrs[e], .little);
++            std.mem.writeInt(u64, out[8 * E ..][0..8], sh.ptr, .little);
++            return out;
++        }
++        const data = s.weights.get(ragged) orelse uniform: {
++            const t = s.weights.get(stack) orelse return error.MissingWeight;
+             if (t.len != lay.trellisBytes()) return error.ExpertStackSize;
+             break :uniform t;
+         };
+-        const sh = s.weights.get(try std.fmt.allocPrint(a, "{s}.trellis", .{shared})) orelse return error.MissingWeight;
+-        const out = try a.alloc(u8, 8 * (E + 1));
+         for (0..E) |e| std.mem.writeInt(u64, out[8 * e ..][0..8], data.ptr + lay.byteOffset(e), .little);
+         std.mem.writeInt(u64, out[8 * E ..][0..8], sh.ptr, .little);
+         return out;
+diff --git a/zig/src/families/deepseek_v41/load.zig b/zig/src/families/deepseek_v41/load.zig
+index 36b7e2c..ac303a7 100644
+--- a/zig/src/families/deepseek_v41/load.zig
++++ b/zig/src/families/deepseek_v41/load.zig
+@@ -4,6 +4,8 @@ const std = @import("std");
+ const cuda = @import("cuda");
+ const named = @import("named.zig");
+ const ex_stacks = @import("ex_stacks.zig");
++const cold = @import("cold.zig");
++const exl3 = @import("exl3.zig");
+ 
+ pub const Tensor = struct {
+     ptr: u64,
+@@ -27,10 +29,20 @@ pub const Weights = struct {
+     /// model's boot, where nothing reads it (95 GiB a rank through one thread's SHA-256, in software on the generic
+     /// aarch64 build: the likely bulk of the Spark night's 261 s "upload + digest")
+     digest: bool = true,
++    /// TF_DSV41_COLD: a routed projection's per-expert trellis addresses when some of its experts stay in a mapping
++    experts: std.StringHashMapUnmanaged([]u64) = .empty,
++    maps: std.ArrayList(cold.Mapping) = .empty,
++    /// trellis bytes left in mappings instead of device memory
++    cold_bytes: usize = 0,
+ 
+     pub fn deinit(w: *Weights) void {
+         for (w.bufs.items) |*b| b.free();
+         w.bufs.deinit(w.gpa);
++        var ex = w.experts.valueIterator();
++        while (ex.next()) |v| w.gpa.free(v.*);
++        w.experts.deinit(w.gpa);
++        for (w.maps.items) |*m| m.close();
++        w.maps.deinit(w.gpa);
+         var it = w.map.keyIterator();
+         while (it.next()) |k| w.gpa.free(k.*);
+         w.map.deinit(w.gpa);
+@@ -38,7 +50,8 @@ pub const Weights = struct {
+     }
+ 
+     /// Uploads every tensor `b` holds (its host images can be freed afterwards); a name already on the GPU is refused.
+-    pub fn upload(w: *Weights, d: *const cuda.Driver, b: *const named.Builder) !void {
++    /// With `chill`, its routed projections upload their hot experts only.
++    pub fn upload(w: *Weights, d: *const cuda.Driver, b: *const named.Builder, chill: ?*const cold.Layer) !void {
+         // TF_DSV41_EX_STACKS: a routed suh / svh and its shared expert's in one buffer (ex_stacks.zig)
+         var paired: std.AutoHashMapUnmanaged(usize, void) = .empty;
+         defer paired.deinit(w.gpa);
+@@ -71,6 +84,10 @@ pub const Weights = struct {
+         for (b.out.items, 0..) |n, i| {
+             if (paired.contains(i)) continue;
+             if (w.map.contains(n.name)) return error.DuplicateWeight;
++            if (chill) |c| if (c.layout(n.name)) |lay| {
++                try w.uploadHot(d, n, lay, c);
++                continue;
++            };
+             var sha: [32]u8 = @splat(0);
+             if (w.digest) std.crypto.hash.sha2.Sha256.hash(n.bytes, &sha, .{});
+             var buf = try cuda.DeviceBuffer.fromHost(d, n.bytes);
+@@ -83,6 +100,43 @@ pub const Weights = struct {
+         try d.check(d.api.cuCtxSynchronize(), "cuCtxSynchronize");
+     }
+ 
++    /// A routed projection's hot experts back to back on the GPU; each cold one's address in the layer's mapping.
++    fn uploadHot(w: *Weights, d: *const cuda.Driver, n: named.Named, lay: *const exl3.Layout, c: *const cold.Layer) !void {
++        const count = lay.count();
++        const in_file = c.offsets.get(n.name) orelse return error.ColdNotPrepared;
++        const is_cold = try w.gpa.alloc(bool, count);
++        defer w.gpa.free(is_cold);
++        @memset(is_cold, false);
++        for (c.ids) |id| {
++            if (id >= count) return error.ColdExpertRange;
++            is_cold[id] = true;
++        }
++        var hot: usize = 0;
++        for (0..count) |e| hot += if (is_cold[e]) 0 else cold.expertBytes(lay, e);
++        var buf = try cuda.DeviceBuffer.alloc(d, @max(hot, 16));
++        errdefer buf.free();
++        const addrs = try w.gpa.alloc(u64, count);
++        errdefer w.gpa.free(addrs);
++        var at: usize = 0;
++        for (0..count) |e| {
++            const off: usize = @intCast(lay.byteOffset(e));
++            const len = cold.expertBytes(lay, e);
++            if (is_cold[e]) {
++                addrs[e] = c.base + in_file + off;
++                w.cold_bytes += len;
++                continue;
++            }
++            try cuda.DeviceBuffer.upload(buf, at, n.bytes[off..][0..len]);
++            addrs[e] = buf.ptr + at;
++            at += len;
++        }
++        try w.bufs.append(w.gpa, buf);
++        const name = try w.gpa.dupe(u8, n.name);
++        try w.map.put(w.gpa, name, .{ .ptr = buf.ptr, .len = hot, .kind = n.kind, .sha256 = @splat(0), .shape = n.shape, .rank = n.rank });
++        try w.experts.put(w.gpa, name, addrs);
++        w.bytes += hot;
++    }
++
+     fn put(w: *Weights, n: named.Named, ptr: u64) !void {
+         var sha: [32]u8 = @splat(0);
+         if (w.digest) std.crypto.hash.sha2.Sha256.hash(n.bytes, &sha, .{});
+diff --git a/zig/src/families/deepseek_v41/m1_main.zig b/zig/src/families/deepseek_v41/m1_main.zig
+index 6a30cf5..8c1bc6e 100644
+--- a/zig/src/families/deepseek_v41/m1_main.zig
++++ b/zig/src/families/deepseek_v41/m1_main.zig
+@@ -244,14 +244,14 @@ fn replay(gpa: std.mem.Allocator, io: std.Io, pack_dir: []const u8, capture: []c
+         var b: named.Builder = .{ .gpa = gpa, .io = io, .pack = &pack };
+         defer b.deinit();
+         try b.layer(l, cfg.o_groups, 0, 2);
+-        try w.upload(&driver, &b);
++        try w.upload(&driver, &b, null);
+     }
+     {
+         var b: named.Builder = .{ .gpa = gpa, .io = io, .pack = &pack };
+         defer b.deinit();
+         try b.top(&pl);
+         try b.dspark(&pl);
+-        try w.upload(&driver, &b);
++        try w.upload(&driver, &b, null);
+     }
+     const load_s = @as(f64, @floatFromInt(t0.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / 1e9;
+     std.debug.print("loaded {d} layers, {d} tensors, {d:.2} GB in {d:.1} s\n", .{ blocks.len, w.map.count(), @as(f64, @floatFromInt(w.bytes)) / 1e9, load_s });
+diff --git a/zig/src/families/deepseek_v41/m2a.zig b/zig/src/families/deepseek_v41/m2a.zig
+index 1ee8523..e9af404 100644
+--- a/zig/src/families/deepseek_v41/m2a.zig
++++ b/zig/src/families/deepseek_v41/m2a.zig
+@@ -84,13 +84,13 @@ pub fn main(gpa: std.mem.Allocator, io: std.Io, pack_dir: []const u8, ref: []con
+         var b: named.Builder = .{ .gpa = gpa, .io = io, .pack = &pack };
+         defer b.deinit();
+         try b.layer(l, cfg.o_groups, 0, 2);
+-        try w.upload(&driver, &b);
++        try w.upload(&driver, &b, null);
+     }
+     {
+         var b: named.Builder = .{ .gpa = gpa, .io = io, .pack = &pack };
+         defer b.deinit();
+         try b.top(&pl);
+-        try w.upload(&driver, &b);
++        try w.upload(&driver, &b, null);
+     }
+     std.debug.print("loaded {d} layers, {d:.2} GB\n", .{ layers.len, @as(f64, @floatFromInt(w.bytes)) / 1e9 });
+ 
+diff --git a/zig/src/families/deepseek_v41/m2b.zig b/zig/src/families/deepseek_v41/m2b.zig
+index 40d3eb4..5e62420 100644
+--- a/zig/src/families/deepseek_v41/m2b.zig
++++ b/zig/src/families/deepseek_v41/m2b.zig
+@@ -101,14 +101,14 @@ pub fn main(gpa: std.mem.Allocator, io: std.Io, pack_dir: []const u8, ref: []con
+         var b: named.Builder = .{ .gpa = gpa, .io = io, .pack = &pack };
+         defer b.deinit();
+         try b.layer(l, cfg.o_groups, rank, 2);
+-        try w.upload(&driver, &b);
++        try w.upload(&driver, &b, null);
+     }
+     {
+         var b: named.Builder = .{ .gpa = gpa, .io = io, .pack = &pack };
+         defer b.deinit();
+         try b.top(&pl);
+         try b.dspark(&pl);
+-        try w.upload(&driver, &b);
++        try w.upload(&driver, &b, null);
+     }
+     var aot = try cuda.aot.Set.load(gpa, io, &driver, ctx.device, try std.fs.path.join(a, &.{ ref, "aot" }));
+     defer aot.deinit();
+diff --git a/zig/src/families/deepseek_v41/model.zig b/zig/src/families/deepseek_v41/model.zig
+index a8cff56..04c91b6 100644
+--- a/zig/src/families/deepseek_v41/model.zig
++++ b/zig/src/families/deepseek_v41/model.zig
+@@ -23,6 +23,7 @@ const plan = @import("plan.zig");
+ const named = @import("named.zig");
+ const load = @import("load.zig");
+ const prepared = @import("prepared.zig");
++const cold = @import("cold.zig");
+ const buffers = @import("buffers.zig");
+ const forms = @import("forms.zig");
+ const forms_inplace = @import("forms_inplace.zig");
+@@ -207,6 +208,13 @@ pub const Model = struct {
+         // TF_DSV41_PREPARED (prepared.zig): each layer's host images read back instead of rebuilt from the pack
+         var cache = try prepared.Cache.fromEnv(gpa, io, &m.pack, .{ .rank = m.tcfg.rank, .world = world, .o_groups = m.cfg.o_groups, .blocks = blocks, .dspark = o.drafts });
+         defer if (cache) |*c| c.deinit();
++        // TF_DSV41_COLD (cold.zig): rarely routed experts read from their prepared file through a mapping
++        var cold_set = try cold.Set.fromEnv(gpa, io);
++        defer if (cold_set) |*c| c.deinit();
++        if (cold_set != null) {
++            if (cache == null) return error.ColdNeedsPrepared;
++            try cold.check(&m.ctx);
++        }
+         var t_build: i96 = 0;
+         var t_upload: i96 = 0;
+         const t_load = std.Io.Clock.awake.now(io).toNanoseconds();
+@@ -226,7 +234,19 @@ pub const Model = struct {
+                 var next_buf: [16]u8 = undefined;
+                 c.willNeed(if (i + 1 < m.pl.layers.len) std.fmt.bufPrint(&next_buf, "L{d}", .{i + 1}) catch "" else "top");
+             }
+-            try m.weights.upload(&m.driver, &b);
++            var chill: ?cold.Layer = null;
++            if (cold_set) |*cs| {
++                if (l.index < m.cfg.layers) if (cs.of(l.index)) |ids| {
++                    var pbuf: [std.fs.max_path_bytes]u8 = undefined;
++                    var map = try cold.Mapping.open(io, try cache.?.filePath(&pbuf, tag));
++                    errdefer map.close();
++                    const offsets = try a.create(std.StringHashMapUnmanaged(u64));
++                    offsets.* = try cache.?.offsets(a, tag);
++                    try m.weights.maps.append(gpa, map);
++                    chill = .{ .ids = ids, .layouts = .{ &l.experts[0].layout, &l.experts[1].layout, &l.experts[2].layout }, .base = map.base(), .offsets = offsets };
++                };
++            }
++            try m.weights.upload(&m.driver, &b, if (chill) |*c| c else null);
+             t_build += t1 - t0;
+             t_upload += std.Io.Clock.awake.now(io).toNanoseconds() - t1;
+         }
+@@ -240,7 +260,7 @@ pub const Model = struct {
+                 if (cache) |*c| c.put(&b, "top") catch |e| std.log.warn("dsv41 prepared: top not written ({t})", .{e});
+             }
+             const t1 = std.Io.Clock.awake.now(io).toNanoseconds();
+-            try m.weights.upload(&m.driver, &b);
++            try m.weights.upload(&m.driver, &b, null);
+             t_build += t1 - t0;
+             t_upload += std.Io.Clock.awake.now(io).toNanoseconds() - t1;
+         }
+@@ -250,6 +270,7 @@ pub const Model = struct {
+             }
+         }.of;
+         if (cache) |c| std.log.info("dsv41 load: weights {d:.0} ms ({d:.0} ms images, {d:.0} ms upload + digest), {d:.1} GiB; prepared {s}: {d} read ({d:.1} GiB in {d:.0} ms), {d} built, {d} written ({d:.0} ms)", .{ ms(std.Io.Clock.awake.now(io).toNanoseconds() - t_load), ms(t_build), ms(t_upload), @as(f64, @floatFromInt(m.weights.bytes)) / (1 << 30), c.root, c.stats.hits, @as(f64, @floatFromInt(c.stats.read_bytes)) / (1 << 30), ms(c.stats.read_ns), c.stats.misses, c.stats.written, ms(c.stats.write_ns) }) else std.log.info("dsv41 load: weights {d:.0} ms ({d:.0} ms images from the pack, {d:.0} ms upload + digest), {d:.1} GiB; TF_DSV41_PREPARED unset", .{ ms(std.Io.Clock.awake.now(io).toNanoseconds() - t_load), ms(t_build), ms(t_upload), @as(f64, @floatFromInt(m.weights.bytes)) / (1 << 30) });
++        if (m.weights.cold_bytes > 0) std.log.info("dsv41 cold: {d:.2} GiB of routed experts read through prepared-file mappings ({d} layers)", .{ @as(f64, @floatFromInt(m.weights.cold_bytes)) / (1 << 30), m.weights.maps.items.len });
+         tr.step("weights", cuda.usage(false));
+         m.aot = try cuda.aot.Set.load(gpa, io, &m.driver, m.ctx.device, try std.fs.path.join(a, &.{ assets, "aot" }));
+         m.widths = try m2a.widths(a, &m.weights, &m.pl);
+diff --git a/zig/src/families/deepseek_v41/prepared.zig b/zig/src/families/deepseek_v41/prepared.zig
+index f3daa8e..7b1598d 100644
+--- a/zig/src/families/deepseek_v41/prepared.zig
++++ b/zig/src/families/deepseek_v41/prepared.zig
+@@ -117,6 +117,34 @@ pub const Cache = struct {
+         return true;
+     }
+ 
++    /// ``<tag>.bin``'s path.
++    pub fn filePath(c: *const Cache, buf: []u8, tag: []const u8) ![]const u8 {
++        return c.path(buf, tag, "");
++    }
++
++    /// Each tensor of ``<tag>.bin`` by name: its payload's offset in the file.
++    pub fn offsets(c: *const Cache, a: Allocator, tag: []const u8) !std.StringHashMapUnmanaged(u64) {
++        var pbuf: [std.fs.max_path_bytes]u8 = undefined;
++        const f = try Io.Dir.cwd().openFile(c.io, try c.path(&pbuf, tag, ""), .{});
++        defer f.close(c.io);
++        var fixed: [16]u8 = undefined;
++        if (try f.readPositionalAll(c.io, &fixed, 0) != 16) return error.Truncated;
++        if (!std.mem.eql(u8, fixed[0..8], magic)) return error.BadMagic;
++        if (std.mem.readInt(u32, fixed[8..12], .little) != version) return error.BadVersion;
++        var out: std.StringHashMapUnmanaged(u64) = .empty;
++        var off: u64 = 16;
++        for (0..std.mem.readInt(u32, fixed[12..16], .little)) |_| {
++            var e: Entry = undefined;
++            if (try f.readPositionalAll(c.io, std.mem.asBytes(&e), off) != @sizeOf(Entry)) return error.Truncated;
++            off += @sizeOf(Entry);
++            const name = try a.alloc(u8, e.name_len);
++            if (try f.readPositionalAll(c.io, name, off) != name.len) return error.Truncated;
++            off += e.name_len;
++            try out.put(a, name, e.offset);
++        }
++        return out;
++    }
++
+     /// Writes ``<tag>.bin`` from `b` when writing is on and the file is missing.
+     pub fn put(c: *Cache, b: *const named.Builder, tag: []const u8) !void {
+         if (!c.write) return;
