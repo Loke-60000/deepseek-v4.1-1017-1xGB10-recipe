@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from recipe.pack.graft import DenseWriter
+from recipe.pack.graft import DenseWriter, GraftBuilder, expert_of
 from recipe.pack.hub import TensorRecord
 
 
@@ -53,6 +53,16 @@ class DenseWriterTest(unittest.TestCase):
             writer.write(out)
             self.assertEqual(read_back(out), {n: tensors[n] for n in ("a", "b", "c")})
         self.assertGreater(remote.reads, 3)
+
+
+class SwapTest(unittest.TestCase):
+    def test_unequal_gate_up_widths(self):
+        widths = {(0, 1, "w1"): 16, (0, 1, "w3"): 32, (0, 2, "w1"): 16, (0, 2, "w3"): 16, (0, 1, "w2"): 48}
+        self.assertEqual(GraftBuilder.unequal(widths), {(0, 1)})
+
+    def test_expert_of(self):
+        self.assertEqual(expert_of("layers.12.ffn.experts.300.w2.svh"), (12, 300))
+        self.assertIsNone(expert_of("layers.12.ffn.shared_experts.w2.weight"))
 
 
 if __name__ == "__main__":

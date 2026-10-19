@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import struct
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ from recipe.pack.hub import HubRepo, RemoteFile, TensorRecord
 from recipe.settings import Settings
 
 ROUTED = re.compile(r"^layers\.\d+\.ffn\.experts\.\d+\.")
+EXPERT = re.compile(r"^layers\.(\d+)\.ffn\.experts\.(\d+)\.(w[123])\.")
 INDEX = "model.safetensors.index.json"
 DENSE_FILE = "graft-dense.safetensors"
 MANIFEST = "graft-manifest.json"
@@ -97,8 +99,17 @@ class DenseWriter:
                     os.pwrite(fd, data[start - lo : end - lo], base + offset + start - record.start)
 
 
+def expert_of(name: str) -> tuple[int, int] | None:
+    match = EXPERT.match(name)
+    return (int(match[1]), int(match[2])) if match else None
+
+
 class GraftBuilder:
-    """A pack folder: routed experts from the experts pack, every other tensor from the dense pack."""
+    """A pack folder: routed experts from the experts pack, every other tensor from the dense pack.
+
+    An expert whose gate and up projections the experts pack stores at different widths is taken whole from the dense
+    pack instead: the fused gate/up prefill kernel reads both at one width.
+    """
 
     def __init__(self, settings: Settings, workers: int = 8):
         self.out = settings.paths.pack
@@ -110,33 +121,54 @@ class GraftBuilder:
     def build(self) -> Path:
         self.out.mkdir(parents=True, exist_ok=True)
         routed = self._routed_map()
-        records = self._dense_records(set(routed))
-        if not (self.out / DENSE_FILE).exists():
+        swapped = self._mismatched(routed)
+        kept = {name: shard for name, shard in routed.items() if expert_of(name) not in swapped}
+        records = self._dense_records(set(routed), set(kept))
+        manifest = {
+            "experts": {"repo": self.experts.repo_id, "revision": self.experts.revision, "tensors": len(kept)},
+            "dense": {
+                "repo": self.dense.repo_id,
+                "revision": self.dense.revision,
+                "tensors": len(records),
+                "bytes": sum(r.nbytes for r in records),
+                "experts_with_unequal_gate_up": len(swapped),
+            },
+        }
+        if not (self.out / DENSE_FILE).exists() or self._manifest() != manifest:
             remotes = {name: self.dense.remote(name) for name in {r.file for r in records}}
             DenseWriter(records, remotes, self.workers).write(self.out / DENSE_FILE)
-        self._link_shards(set(routed.values()))
+        self._link_shards(set(kept.values()))
         self._copy_side_files()
-        weight_map = routed | {record.name: DENSE_FILE for record in records}
+        weight_map = kept | {record.name: DENSE_FILE for record in records}
         self._write_json(INDEX, {"metadata": {}, "weight_map": dict(sorted(weight_map.items()))})
-        self._write_json(
-            MANIFEST,
-            {
-                "experts": {"repo": self.experts.repo_id, "revision": self.experts.revision, "tensors": len(routed)},
-                "dense": {
-                    "repo": self.dense.repo_id,
-                    "revision": self.dense.revision,
-                    "tensors": len(records),
-                    "bytes": sum(r.nbytes for r in records),
-                },
-            },
-        )
+        self._write_json(MANIFEST, manifest)
         return self.out
+
+    def _manifest(self) -> object:
+        path = self.out / MANIFEST
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def _mismatched(self, routed: dict[str, str]) -> set[tuple[int, int]]:
+        widths: dict[tuple[int, int, str], int] = {}
+        for shard in sorted(set(routed.values())):
+            with open(self.experts.snapshot / shard, "rb") as handle:
+                size = struct.unpack("<Q", handle.read(8))[0]
+                header = json.loads(handle.read(size))
+            for name, meta in header.items():
+                match = EXPERT.match(name)
+                if match and name.endswith(".trellis") and match[3] in ("w1", "w3"):
+                    widths[(int(match[1]), int(match[2]), match[3])] = meta["shape"][-1]
+        return self.unequal(widths)
+
+    @staticmethod
+    def unequal(widths: dict[tuple[int, int, str], int]) -> set[tuple[int, int]]:
+        return {(layer, e) for (layer, e, w), w1 in widths.items() if w == "w1" and widths[(layer, e, "w3")] != w1}
 
     def _routed_map(self) -> dict[str, str]:
         index = json.loads((self.experts.snapshot / INDEX).read_text())["weight_map"]
         return {name: shard for name, shard in index.items() if ROUTED.match(name)}
 
-    def _dense_records(self, routed: set[str]) -> list[TensorRecord]:
+    def _dense_records(self, routed: set[str], kept: set[str]) -> list[TensorRecord]:
         shards = [name for name in self.dense.files if name.endswith(".safetensors")]
         with ThreadPoolExecutor(self.workers) as pool:
             headers = list(pool.map(lambda name: self.dense.remote(name).tensors, shards))
@@ -144,7 +176,7 @@ class GraftBuilder:
         dense_routed = {name for name in everything if ROUTED.match(name)}
         if dense_routed != routed:
             raise ValueError(f"routed experts differ: {len(dense_routed ^ routed)} names are in one pack only")
-        return [record for name, record in everything.items() if name not in routed]
+        return [record for name, record in everything.items() if name not in kept]
 
     def _link_shards(self, shards: set[str]) -> None:
         for shard in sorted(shards):
