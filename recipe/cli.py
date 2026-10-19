@@ -7,6 +7,7 @@ from recipe.ablate.job import DirectionJob
 from recipe.assets import AssetBuilder, EngramPacker
 from recipe.bench.golden import Golden
 from recipe.bench.runner import WorkloadRunner
+from recipe.bench.speed import PROMPTS, SpeedBench
 from recipe.bench.workload import Workload
 from recipe.image import Images
 from recipe.pack.cold import GIB, ColdPlanner, ExpertSizes
@@ -41,6 +42,11 @@ def main() -> None:
     golden.add_argument("action", choices=["record", "check"])
     golden.add_argument("--profile", default="base")
     golden.add_argument("--file", type=Path, required=True)
+    speed = commands.add_parser("speed", help="decode rate, aggregate throughput and first-token time")
+    speed.add_argument("--profile", default="base")
+    speed.add_argument("--kinds", default=",".join(PROMPTS))
+    speed.add_argument("--concurrency", default="1,2,4")
+    speed.add_argument("--max-tokens", type=int, default=512)
     serve = commands.add_parser("serve", help="run the server for a profile")
     serve.add_argument("action", choices=["start", "stop", "check", "dry-run", "smoke"])
     serve.add_argument("--profile", default="base")
@@ -90,6 +96,13 @@ def main() -> None:
         else:
             for agreement in Golden.compare(Golden.load(args.file), answers):
                 print(f"{agreement.kind:13s} shared prefix {agreement.shared_prefix:6.1%}")
+    elif args.command == "speed":
+        serve_options = Profile.load(args.profile).serve
+        Probe(serve_options.port, serve_options.model_id).wait_ready()
+        bench = SpeedBench(serve_options.port, serve_options.model_id, args.max_tokens)
+        for level in (int(c) for c in args.concurrency.split(",")):
+            for kind in args.kinds.split(","):
+                print(bench.run(kind, level).line(), flush=True)
     elif args.command == "serve":
         server = Server(settings, Profile.load(args.profile))
         actions = {"start": server.start, "stop": server.stop, "check": server.preflight}
