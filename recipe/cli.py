@@ -81,8 +81,9 @@ def main() -> None:
         print(DirectionJob(settings, rank=args.rank).build())
     elif args.command == "golden":
         serve_options = Profile.load(args.profile).serve
-        golden_set = Golden(Probe(serve_options.port, serve_options.model_id))
-        answers = golden_set.record()
+        probe = Probe(serve_options.port, serve_options.model_id)
+        probe.wait_ready()
+        answers = Golden(probe).record()
         if args.action == "record":
             Golden.save(answers, args.file)
             print(f"{args.file}: {len(answers)} answers")
