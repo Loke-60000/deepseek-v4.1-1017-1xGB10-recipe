@@ -1,4 +1,4 @@
-ARG ENGINE_IMAGE
+ARG ENGINE_IMAGE=dsv41-1xgb10:dev
 ARG TORCH_IMAGE=nvcr.io/nvidia/pytorch:26.07-py3
 
 FROM ${ENGINE_IMAGE} AS engine

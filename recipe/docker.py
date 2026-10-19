@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ class DockerRun:
 
     def argv(self) -> list[str]:
         argv = ["docker", "run", "--init", "--ipc=host", "--network=host", "--ulimit", "memlock=-1"]
+        argv += ["--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp"]
         argv += ["-d"] if self.detach else ["--rm"]
         if self.name:
             argv += ["--name", self.name]
