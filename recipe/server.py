@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shlex
 import struct
 import subprocess
@@ -33,6 +34,14 @@ class Server:
         drain = int(self.profile.env.get("TF_DSV41_DRAIN_S", "20"))
         subprocess.run(["docker", "stop", "-t", str(drain + 60), self.CONTAINER], check=False)
         subprocess.run(["docker", "rm", self.CONTAINER], check=False, capture_output=True)
+
+    def prepared(self) -> Path:
+        """The prepared folder the running server loaded (its boot log names it)."""
+        log = subprocess.run(["docker", "logs", self.CONTAINER], capture_output=True, text=True, check=True)
+        match = re.search(r"prepared /prepared/([0-9a-f]+)/rank0", log.stdout + log.stderr)
+        if not match:
+            raise RuntimeError(f"{self.CONTAINER} has not loaded a prepared folder yet")
+        return self.settings.paths.prepared / match[1] / "rank0"
 
     def dry_run(self) -> str:
         return shlex.join(self._container(detach=True).argv())

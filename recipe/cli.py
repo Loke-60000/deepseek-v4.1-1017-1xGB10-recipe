@@ -12,10 +12,11 @@ from recipe.bench.workload import Workload
 from recipe.image import Images
 from recipe.pack.cold import GIB, ColdPlanner, ExpertSizes
 from recipe.pack.graft import GraftBuilder
+from recipe.pack.warm import ColdWarmer, free_bytes
 from recipe.probe import Probe
 from recipe.profile import Profile
 from recipe.server import Server
-from recipe.settings import Settings
+from recipe.settings import REPO_ROOT, Settings
 
 
 def main() -> None:
@@ -52,7 +53,8 @@ def main() -> None:
     prefill.add_argument("--profile", default="base")
     prefill.add_argument("--tokens", default="8192,32768,131072")
     serve = commands.add_parser("serve", help="run the server for a profile")
-    serve.add_argument("action", choices=["start", "stop", "check", "dry-run", "smoke"])
+    serve.add_argument("action", choices=["start", "stop", "check", "dry-run", "smoke", "warm"])
+    serve.add_argument("--keep-free-gib", type=float, default=6, help="warm: free memory left untouched")
     serve.add_argument("--profile", default="base")
     args = parser.parse_args()
 
@@ -118,6 +120,14 @@ def main() -> None:
         actions = {"start": server.start, "stop": server.stop, "check": server.preflight}
         if args.action == "dry-run":
             print(server.dry_run())
+        elif args.action == "warm":
+            Probe(server.profile.serve.port, server.profile.serve.model_id).wait_ready()
+            sets = REPO_ROOT / "config" / "cold"
+            cold_set = ColdPlanner.read_set(sets / Path(server.profile.env["TF_DSV41_COLD"]).name)
+            hits = ColdPlanner.read_hits(sets / "hits-calibration.json")
+            warmer = ColdWarmer.of_pack(settings.paths.pack, server.prepared())
+            warmed = warmer.warm(ColdWarmer.order(cold_set, hits), free_bytes(int(args.keep_free_gib * GIB)))
+            print(f"asked the page cache for {warmed / GIB:.1f} GiB of cold experts, most routed first")
         elif args.action == "smoke":
             probe = Probe(server.profile.serve.port, server.profile.serve.model_id)
             print("models:", ", ".join(probe.wait_ready()))
