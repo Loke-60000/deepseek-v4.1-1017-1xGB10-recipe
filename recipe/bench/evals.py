@@ -152,6 +152,7 @@ class HumanEvalPlus(Benchmark):
         "Complete the following Python function. Reply with the complete function, including the signature and any "
         "imports it needs, in one ```python code block.\n\n```python\n{prompt}```"
     )
+    BROKEN = frozenset({"HumanEval/32"})  # its test fails the dataset's own reference solution
 
     def __init__(self, cache: Path, sandbox_image: str, scratch: Path):
         super().__init__(cache)
@@ -160,7 +161,7 @@ class HumanEvalPlus(Benchmark):
 
     def items(self) -> list[Item]:
         lines = self.fetch("evalplus/humanevalplus", "test.jsonl").read_text().splitlines()
-        tasks = [json.loads(line) for line in lines if line.strip()]
+        tasks = [t for t in (json.loads(line) for line in lines if line.strip()) if t["task_id"] not in self.BROKEN]
         return [
             Item(
                 t["task_id"],
