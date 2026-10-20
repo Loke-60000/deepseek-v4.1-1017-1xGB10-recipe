@@ -16,4 +16,4 @@ args=(--rm -i --network host --user "$(id -u):$(id -g)" --group-add "$(stat -c %
 [[ -t 0 && -t 1 ]] && args+=(-t)
 [[ -f $env_file ]] && args+=(--env-file "$env_file")
 [[ -n ${HF_TOKEN:-} ]] && args+=(-e HF_TOKEN)
-exec docker run "${args[@]}" "$image" dsv41 "$@"
+exec docker run "${args[@]}" --entrypoint dsv41 "$image" "$@"

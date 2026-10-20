@@ -1,0 +1,106 @@
+name: images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ENGINE: ghcr.io/loke-60000/dsv41-1xgb10
+  TOOLBOX: ghcr.io/loke-60000/dsv41-1xgb10-toolbox
+
+jobs:
+  images:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    steps:
+      - name: Free disk for the CUDA and PyTorch base images
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell /usr/local/lib/node_modules
+          docker system prune -af >/dev/null
+          df -h /
+
+      - uses: actions/checkout@v5
+
+      - name: Tags
+        id: tags
+        run: |
+          if [[ $GITHUB_REF_TYPE == tag ]]; then version=$GITHUB_REF_NAME; else version=main; fi
+          {
+            echo "version=$version"
+            echo "kit_repo=$(jq -r .image.kit_repo config/recipe.json)"
+            echo "kit_commit=$(jq -r .image.kit_commit config/recipe.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Engine image
+        run: |
+          docker build -f docker/Dockerfile \
+            --build-arg KIT_REPO=${{ steps.tags.outputs.kit_repo }} \
+            --build-arg KIT_COMMIT=${{ steps.tags.outputs.kit_commit }} \
+            --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+            --label org.opencontainers.image.revision=$GITHUB_SHA \
+            -t "$ENGINE:${{ steps.tags.outputs.version }}" .
+          docker push "$ENGINE:${{ steps.tags.outputs.version }}"
+          docker builder prune -af >/dev/null
+          df -h /
+
+      - name: Toolbox image
+        run: |
+          docker build -f docker/toolbox.Dockerfile \
+            --build-arg KIT_REPO=${{ steps.tags.outputs.kit_repo }} \
+            --build-arg KIT_COMMIT=${{ steps.tags.outputs.kit_commit }} \
+            --build-arg ENGINE_IMAGE="$ENGINE:${{ steps.tags.outputs.version }}" \
+            --build-arg TOOLBOX_IMAGE="$TOOLBOX:${{ steps.tags.outputs.version }}" \
+            --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+            --label org.opencontainers.image.revision=$GITHUB_SHA \
+            -t "$TOOLBOX:${{ steps.tags.outputs.version }}" .
+          docker run --rm --entrypoint sh "$TOOLBOX:${{ steps.tags.outputs.version }}" -c "dsv41 --help >/dev/null && docker --version"
+          docker push "$TOOLBOX:${{ steps.tags.outputs.version }}"
+
+      - name: Latest
+        if: github.ref_type == 'tag'
+        run: |
+          for image in "$ENGINE" "$TOOLBOX"; do
+            docker tag "$image:$GITHUB_REF_NAME" "$image:latest"
+            docker push "$image:latest"
+          done
+
+      - name: Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<EOF
+          Images for this release:
+
+          - \`$ENGINE:$GITHUB_REF_NAME\` (the server)
+          - \`$TOOLBOX:$GITHUB_REF_NAME\` (the recipe CLI and build tools)
+
+          Run the recipe without cloning:
+
+          \`\`\`bash
+          docker run --rm --entrypoint cat $TOOLBOX:$GITHUB_REF_NAME /recipe/bin/dsv41 > ~/.local/bin/dsv41
+          chmod +x ~/.local/bin/dsv41
+          export DSV41_TOOLBOX=$TOOLBOX:$GITHUB_REF_NAME
+          dsv41 graft && dsv41 engram && dsv41 assets --profile serve && dsv41 serve start --profile serve
+          \`\`\`
+
+          See docs/running.md for the full setup.
+          EOF
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --generate-notes
