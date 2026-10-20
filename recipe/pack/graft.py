@@ -14,6 +14,7 @@ from recipe.pack.hub import HubRepo, RemoteFile, TensorRecord
 from recipe.settings import Settings
 
 ROUTED = re.compile(r"^layers\.\d+\.ffn\.experts\.\d+\.")
+DRAFT = re.compile(r"^mtp\.\d+\.ffn\.experts\.\d+\.")
 EXPERT = re.compile(r"^layers\.(\d+)\.ffn\.experts\.(\d+)\.(w[123])\.")
 INDEX = "model.safetensors.index.json"
 DENSE_FILE = "graft-dense.safetensors"
@@ -109,12 +110,14 @@ class GraftBuilder:
     """A pack folder: routed experts from the experts pack, every other tensor from the dense pack.
 
     An expert whose gate and up projections the experts pack stores at different widths is taken whole from the dense
-    pack instead: the fused gate/up prefill kernel reads both at one width.
+    pack instead: the fused gate/up prefill kernel reads both at one width. The DSpark draft blocks' experts come from
+    the experts pack when `sources.draft_experts` is "experts" (smaller), else from the dense pack.
     """
 
     def __init__(self, settings: Settings, workers: int = 8):
         self.out = settings.paths.pack
         self.workers = workers
+        self.draft_from_experts = settings.sources.draft_experts == "experts"
         cache = settings.paths.hf_cache
         self.experts = HubRepo(settings.sources.experts_repo, settings.sources.experts_revision, cache)
         self.dense = HubRepo(settings.sources.dense_repo, settings.sources.dense_revision, cache)
@@ -167,7 +170,11 @@ class GraftBuilder:
 
     def _routed_map(self) -> dict[str, str]:
         index = json.loads((self.experts.snapshot / INDEX).read_text())["weight_map"]
-        return {name: shard for name, shard in index.items() if ROUTED.match(name)}
+        return {
+            name: shard
+            for name, shard in index.items()
+            if ROUTED.match(name) or (self.draft_from_experts and DRAFT.match(name))
+        }
 
     def _dense_records(self, routed: set[str], kept: set[str]) -> list[TensorRecord]:
         shards = [name for name in self.dense.files if name.endswith(".safetensors")]
@@ -175,7 +182,7 @@ class GraftBuilder:
             headers = list(pool.map(lambda name: self.dense.remote(name).tensors, shards))
         everything = {name: record for header in headers for name, record in header.items()}
         dense_routed = {name for name in everything if ROUTED.match(name)}
-        if dense_routed != routed:
+        if dense_routed != {name for name in routed if ROUTED.match(name)}:
             raise ValueError(f"routed experts differ: {len(dense_routed ^ routed)} names are in one pack only")
         return [record for name, record in everything.items() if name not in kept]
 

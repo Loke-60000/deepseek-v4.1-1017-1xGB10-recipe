@@ -69,6 +69,7 @@ class Sources(Section):
     dense_revision: str
     derisked_repo: str
     derisked_revision: str
+    draft_experts: str = "experts"
 
 
 @dataclass(frozen=True)

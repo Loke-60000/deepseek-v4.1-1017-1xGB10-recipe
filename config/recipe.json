@@ -5,7 +5,8 @@
     "dense_repo": "jayleaton/DeepSeek-V4.1-Flash-1017-EXL3-2.8bpw",
     "dense_revision": "859396591c340195526aaf61f94b4ad5323a5e18",
     "derisked_repo": "vcruz305/DSV4.1-Flash-1017-DERISKED-EXL3-1.61bpw",
-    "derisked_revision": "3e1e28deec7a3ee7f3d5b22d10dd4fe7b131a8b7"
+    "derisked_revision": "3e1e28deec7a3ee7f3d5b22d10dd4fe7b131a8b7",
+    "draft_experts": "experts"
   },
   "image": {
     "tag": "dsv41-1xgb10:dev",
