@@ -4,7 +4,7 @@
   "env": {
     "TF_DSV41_OWN_PREFILL": "0",
     "TF_DSV41_PREFILL": "full",
-    "TF_DSV41_COLD": "/cold/calibration-20g.json",
+    "TF_DSV41_COLD": "/cold/measured-25g.json",
     "TF_DSV41_HITS": "/state/hits.json"
   }
 }

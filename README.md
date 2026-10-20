@@ -2,132 +2,107 @@
 
 # DeepSeek-V4.1-Flash-1017 on one DGX Spark
 
-DeepSeek-V4.1-Flash-1017 (552B MoE, Engram, DSpark drafts, vision) served from a single NVIDIA DGX Spark (GB10,
-128 GB unified memory) with [TensorFold](https://github.com/ashhart/TensorFold)'s DeepSeek-V4.1 engine, through an
-OpenAI-compatible API. Four slots of 256K context, image input, prompt sessions, and an optional second model id that
-serves a derisked (abliterated) variant from the same weights.
+Runs DeepSeek-V4.1-Flash-1017 on a single DGX Spark with [TensorFold](https://github.com/ashhart/TensorFold)'s
+DeepSeek engine, behind an OpenAI-compatible API: four 256K-context slots, image input, prompt caching, and an
+optional second model id that answers as the derisked variant.
 
-## How it fits
+<p align="center"><img src="docs/assets/overview.png" alt="Unified memory holds 78 GiB of weights and buffers plus a 36 GiB page cache; the SSD holds 45 GiB of cold experts and the 189 GiB Engram tables. 8 % of routed picks go to the 43 % of experts on SSD. 92-97 tok/s at 4 streams, 29-30 at one, 0.3-0.4 s to the first token." width="100%"></p>
 
-The model does not fit in 128 GB, so the recipe combines three things:
+The model is bigger than the Spark's memory, so it is assembled from two quantized packs and the rarely used experts
+stay on the SSD:
 
-| Piece | What it is |
-|---|---|
-| Routed experts | [vcruz305's SAGE EXL3 1.62 bpw](https://huggingface.co/vcruz305/DSV4.1-Flash-1017-SAGE-EXL3-1.62bpw), DSpark draft experts too |
-| Everything else | [jayleaton's flash17 EXL3 2.8 bpw](https://huggingface.co/jayleaton/DeepSeek-V4.1-Flash-1017-EXL3-2.8bpw) dense tensors, and the 820 experts whose SAGE gate/up widths differ |
-| Engram tables | 189 GiB of FP8 n-gram memory, packed for one rank, read from NVMe row by row |
-| Cold experts | the least-routed experts stay in the engine's prepared files and the GPU reads them through a read-only mapping (GB10's ATS); the page cache keeps the ones in use |
+- routed experts from [vcruz305's SAGE EXL3 1.62 bpw](https://huggingface.co/vcruz305/DSV4.1-Flash-1017-SAGE-EXL3-1.62bpw),
+  everything else from [jayleaton's flash17 EXL3 2.8 bpw](https://huggingface.co/jayleaton/DeepSeek-V4.1-Flash-1017-EXL3-2.8bpw);
+- the least-routed experts are read by the GPU straight from the engine's files on disk, and the page cache keeps the
+  ones in use;
+- the 189 GiB Engram tables are read from the SSD a row at a time.
 
-`dsv41 graft` builds the pack folder from the two Hub repos (hardlinks plus ~18 GB of range reads), `dsv41 engram`
-packs the Engram shards, and the engine image is TensorFold's DeepSeek-V4.1 kit with this repo's `patches/`.
+## Speed
 
-## Measured (one GB10, `serve` profile)
+Greedy decoding, 512 tokens per request, warm cache:
 
-Greedy, 512 tokens a request, warm page cache, mixed kinds back to back (`dsv41 speed`); new prompts of 25-37K
-tokens prefill at 850-1,370 tok/s warm (`dsv41 prefill`):
+| Streams | Per stream | Total | First token |
+|---:|---:|---:|---:|
+| 1 | 29-30 tok/s | 29-30 tok/s | 0.3 s |
+| 4 | 24-25 tok/s | 92-97 tok/s | 0.5-1.0 s |
+| 8 (`serve8`) | 14-19 tok/s | 100-136 tok/s | 1.6-3.1 s |
 
-| Streams | Prose per stream | Code per stream | Structured per stream | Aggregate | First token |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 29.4 tok/s | 30.5 tok/s | 29.9 tok/s | 29-30 tok/s | 0.3 s |
-| 4 | 24.0 | 24.8 | 24.6 | 92-97 | 0.5-1.0 s |
-| 8 (`serve8`) | 14 | 18 | 19 | 100-136 | 1.6-3.1 s |
+New prompts of 25-37K tokens prefill at 850-1,370 tok/s.
 
-Native prefill matches the decode-window path answer for answer on the golden set (`dsv41 golden`), and normal
-requests are byte-identical with the derisked id loaded and running in the same batches.
+Known limits:
 
-## What decides the speed
+- A long *new* prompt runs every expert and pushes the cached ones out, so the next few replies drop to 10-19 tok/s
+  until the cache settles. Follow-up turns reuse the cached prompt and are not affected.
+- DSpark speculative decoding is off: on this memory budget it reads far more experts from disk and halves 4-stream
+  throughput.
+- Each token runs the fewest of its 6 routed experts that carry 85 % of the router weight
+  (`TF_DSV41_EXPERT_TOPP=0.85`). Running all 6 is a third slower here.
 
-- **The working set must stay in RAM.** Weights plus buffers need ~123 GiB of a box that leaves ~100 for the model.
-  The experts the page cache holds cost nothing; the ones it misses are faulted in from NVMe by the GPU, slowly. The
-  routing is skewed (the coldest 30 % of experts take 2.8 % of picks), so the cold set is chosen from measured hits,
-  and it is larger than the shortfall: 45 GiB mapped lets the page cache follow the traffic (0.5 GB of NVMe reads a
-  sweep, against 8 GB at 25 GiB).
-- **DSpark is off.** Verifying drafted rows touches several times more distinct experts a step; on this memory budget
-  that multiplied NVMe reads ~8x and cut 4-stream throughput from ~90 to ~50 tok/s. With the cache warm on one kind
-  of text it reaches 35-45 tok/s single-stream on code and JSON, so it is worth revisiting with more RAM.
-- **Memory levers already used:** DSpark experts from the SAGE pack (2.8 GiB instead of 6.3), `vm.min_free_kbytes`
-  1 GiB instead of 4, the other GPU services on the box stopped.
-- **Expert top-p stays at 0.85.** Each token runs the fewest of its 6 routed experts that carry 85 % of the router
-  weight. Exact top-6 (`TF_DSV41_EXPERT_TOPP` unset, as DeepSeek serves it) read 24 % more from NVMe and cut
-  4-stream throughput by a third.
-- **A long new prompt costs the next few replies.** Its prefill runs every expert, so the whole 45 GiB cold set streams
-  through ~36 GiB of page cache and pushes out what decode reuses: right after an 8K and a 28K prompt, single-stream
-  decode drops to 10-19 tok/s and 4 streams to 48-80 tok/s until the cache follows the traffic again. Prompts that
-  share a prefix with an earlier one (agents, chats) prefill only their new tokens. Locking the 24 most-routed GiB of
-  the cold set in RAM (`mlock`) did not change this (10-19 / 57-84 tok/s) and left 15 GB available, so it was dropped:
-  the fix is fewer expert bytes or more RAM.
-- **Tried and dropped:** NVMe read-ahead (GPU faults do not take that path) and `MADV_HUGEPAGE` on the mappings (2 MiB
-  faults pull neighbouring experts in and cost 25-45 % at 4 streams).
-
-## Quick start
+## Setup
 
 ```bash
-cp .env.example .env                 # paths, served model id, aliases, derisked id
-python3 -m recipe.cli image          # engine + toolbox images (patches applied)
-python3 -m recipe.cli graft          # the pack folder
-python3 -m recipe.cli engram         # Engram shards for one rank
+cp .env.example .env                     # paths, model id, aliases, derisked id
+python3 -m recipe.cli image              # engine and toolbox images, patches applied
+python3 -m recipe.cli graft              # build the pack from the two Hub repos
+python3 -m recipe.cli engram             # pack the Engram tables
 python3 -m recipe.cli assets --profile serve
 python3 -m recipe.cli serve start --profile serve
-python3 -m recipe.cli serve warm --profile serve    # after every start: see below
+python3 -m recipe.cli serve warm --profile serve
 python3 -m recipe.cli serve smoke --profile serve
 ```
 
-The API is at `http://<host>:8888/v1`. `dsv41 serve stop` drains requests first.
+The API listens on `http://<host>:8888/v1`; `serve stop` drains open requests first.
 
-`serve warm` reads the most-routed cold experts into the page cache at disk speed, then sends a short reply of each
-kind and one long prompt. A fresh start without it serves the first long prompt at ~90 tok/s and the first replies
-at 8-17 tok/s while experts fault in; with it, ~440 tok/s, and full speed after the first few requests.
+Run `serve warm` after every start. It reads the most-used cold experts into memory and sends a few warm-up
+requests; without it, the first replies run at 8-17 tok/s while experts load from disk.
 
-`python3 -m recipe.cli units install` adds two systemd user units (needs `loginctl enable-linger`):
-`dsv41-guard` kills the container when MemAvailable drops under `--floor-gib` (2.5 by default), because unified
-memory locks the whole box up before the OOM killer acts, and `dsv41-warm` runs `serve warm` after every boot.
+`python3 -m recipe.cli units install` sets up two systemd user units (requires `loginctl enable-linger`):
 
-## Profiles
+- `dsv41-guard` stops the server if available memory falls under 2.5 GiB. On unified memory the whole box freezes
+  before the OOM killer reacts.
+- `dsv41-warm` runs `serve warm` after each boot.
 
-`config/profiles/*.json`, layered with `extends`; any `TF_DSV41_*` variable in the environment or `.env` overrides
-the profile, and `DSV41_SERVE_*` overrides the serve options.
+## Configuration
 
-| Profile | Use |
+Settings come from `config/recipe.json` and `config/profiles/*.json`. Values in `.env` or the environment win:
+`DSV41_SERVE_*` for the API, any `TF_DSV41_*` for the engine.
+
+| Profile | For |
 |---|---|
-| `serve` | production: 4 slots x 256K, vision, 4K native prefill, sessions, measured 45 GiB cold set, drafts off |
-| `serve8` | `serve` with 8 slots sharing the same 1M-token pool: more aggregate, slower per stream |
-| `native` | native prefill check, 1 slot, no drafts |
-| `calibrate` | decode-window prefill and routing hit counters, for choosing the cold set |
-| `bringup` | the smallest boot |
+| `serve` | production: 4 slots x 256K, vision, prompt caching, 45 GiB of experts on disk |
+| `serve8` | 8 slots in the same KV pool: more total throughput, slower per stream |
+| `calibrate` | counts which experts get routed, to choose what stays on disk |
+| `native`, `bringup` | small single-slot boots for testing |
+
+To re-pick the experts that stay on disk: run the `calibrate` profile, send `dsv41 calibrate`, then
+`dsv41 cold --gib 45 --hits <hits file> --out config/cold/<name>.json`.
 
 ## Derisked model id
 
-`DSV41_SERVE_ABLATE_MODEL=<id>` serves a second model id from the same weights: requests naming it get the
-[DERISKED](https://huggingface.co/vcruz305/DSV4.1-Flash-1017-DERISKED-EXL3-1.61bpw) pack's edit applied at run time.
-`dsv41 ablate` recovers that edit from the derisked pack's FP8 attention writers: one direction per layer, layers
-14-39, strength about 3.3, applied as `y -= Q (A (Q^T y))` to the attention output of the masked rows only. Other
-requests in the same batch are untouched, bit for bit.
-
-## Tools
-
-| Command | Does |
-|---|---|
-| `dsv41 calibrate` | sends a mixed workload (code, prose, math, tool calls, six languages) for routing statistics |
-| `dsv41 cold --gib N --hits FILE` | the cold set: fewest routed picks per byte first |
-| `dsv41 golden record/check` | greedy answers under one profile, compared under another |
-| `dsv41 speed` | decode rate, aggregate throughput and first-token time under concurrency |
+Set `DSV41_SERVE_ABLATE_MODEL=<id>` and run `dsv41 ablate` once. Requests for that id get the edit from
+[vcruz305's DERISKED pack](https://huggingface.co/vcruz305/DSV4.1-Flash-1017-DERISKED-EXL3-1.61bpw), applied at run
+time to the same weights. Other requests in the same batch are not affected.
 
 ## Engine patches
 
+`patches/` applies to jayleaton's kit at the commit pinned in `config/recipe.json`.
+
 | Patch | Change |
 |---|---|
-| 0001 | single-rank output groups in the AOT enumeration |
-| 0002 | cold experts read through prepared-file mappings |
-| 0003 | FP8 safetensors entries read as bytes (a grafted pack's unused native tensors) |
-| 0004 | routing hit counters (`TF_DSV41_HITS`) |
-| 0005 | 1-bit experts in the x3gm prefill kernels |
-| 0006 | run-time ablation for a second model id |
-| 0007 | appending token log for drafter distillation; prefill calls under `TF_DSV41_SYNC_EACH` |
-| 0008 | single-rank sampling on the device, in vocabulary slices |
-| 0009 | the 4K prefill workspace holds every index row block's position: prompts of 7.2K-8.2K tokens failed with `Unbound` |
+| 0001 | AOT kernel list for a single GPU |
+| 0002 | cold experts read from the prepared files on disk |
+| 0003 | FP8 tensors in a grafted pack loaded as bytes |
+| 0004 | per-expert routing counters (`TF_DSV41_HITS`) |
+| 0005 | 1-bit experts in the prefill kernels |
+| 0006 | the derisked second model id |
+| 0007 | token log for training a draft model (`TF_DSV41_TRACE_TOKENS`) |
+| 0008 | sampling on the GPU for a single rank |
+| 0009 | fixes prompts of 7.2K-8.2K tokens failing with `Unbound` |
 
 ## Credits
 
-DeepSeek for the model; ashhart's [TensorFold](https://github.com/ashhart/TensorFold) and jayleaton's
-[DeepSeek-V4.1 TensorFold kit](https://github.com/jayleaton/deepseek-v41-tensorfold-spark) for the engine and the
-flash17 pack; vcruz305 for the SAGE and DERISKED packs and the cold-expert idea; turboderp for EXL3.
+DeepSeek for the model. ashhart for [TensorFold](https://github.com/ashhart/TensorFold). jayleaton for the
+[DeepSeek-V4.1 TensorFold kit](https://github.com/jayleaton/deepseek-v41-tensorfold-spark) and the flash17 pack.
+vcruz305 for the SAGE and DERISKED packs, the cold-expert approach, and the starting expert list in
+`config/cold/vllm-recipe-1380.json`, taken from vcruz305's
+[Spark recipe](https://github.com/vcruz305/DSV4.1-Flash-1017-EXL3-Spark-recipe) (MIT). turboderp for EXL3.
