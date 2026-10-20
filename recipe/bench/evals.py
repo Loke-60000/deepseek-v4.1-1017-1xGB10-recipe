@@ -178,6 +178,7 @@ class HumanEvalPlus(Benchmark):
     def grade(self, items: list[Item], texts: dict[str, str]) -> dict[str, bool]:
         self.scratch.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=self.scratch) as tmp:
+            Path(tmp).chmod(0o755)
             files = {}
             for n, item in enumerate(items):
                 code = self.parse(texts[item.id])
@@ -186,7 +187,7 @@ class HumanEvalPlus(Benchmark):
                 files[f"t{n}.py"] = item.id
                 program = f"{code}\n\n{item.extra['test']}\n\ncheck({item.extra['entry']})\n"
                 (Path(tmp) / f"t{n}.py").write_text(program)
-            script = 'cd /w && for f in t*.py; do timeout 30 python3 "$f" >/dev/null 2>&1 && echo "$f"; done'
+            script = 'cd /w && for f in t*.py; do timeout 30 python3 "$f" >/dev/null 2>&1 && echo "$f"; done; true'
             run = subprocess.run(
                 [
                     "docker",
