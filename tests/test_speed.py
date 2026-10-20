@@ -30,6 +30,7 @@ class SpeedTest(unittest.TestCase):
             result = SpeedBench(server.server_port, "m").run("prose", 3)
         finally:
             server.shutdown()
+            server.server_close()
         self.assertEqual(len(result.streams), 3)
         self.assertTrue(all(s.tokens == 5 for s in result.streams))
         self.assertGreater(result.aggregate, 0)

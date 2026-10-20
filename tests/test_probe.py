@@ -35,6 +35,7 @@ class ProbeTest(unittest.TestCase):
 
     def tearDown(self):
         self.server.shutdown()
+        self.server.server_close()
 
     def test_ready_lists_models_and_smoke_passes(self):
         self.assertEqual(self.probe.wait_ready(timeout=5), ["m", "alias"])
