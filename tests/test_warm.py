@@ -23,6 +23,17 @@ class WarmTest(unittest.TestCase):
             spans = ColdWarmer(sizes, root).spans([(3, 2)])
         self.assertEqual([(s.start, s.length) for s in spans], [(4096 + 30, 30), (8192 + 30, 30), (16384 + 30, 30)])
 
+    def test_warm_reads_the_spans_within_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prepared_file(root / "L0.bin", {"L0.moe.w1.data": 4096, "L0.moe.w2.data": 8192, "L0.moe.w3.data": 12288})
+            with open(root / "L0.bin", "r+b") as handle:
+                handle.truncate(16384)
+            sizes = {(0, e, w): 100 for e in range(2) for w in ("w1", "w2", "w3")}
+            warmer = ColdWarmer(sizes, root)
+            self.assertEqual(warmer.warm([(0, 1), (0, 0)], budget=450), 300)
+            self.assertEqual(warmer.warm([(0, 1), (0, 0)], budget=10_000), 600)
+
     def test_hottest_cold_experts_first(self):
         self.assertEqual(ColdWarmer.order([(0, 1), (0, 2), (1, 0)], {(0, 2): 9, (1, 0): 4}), [(0, 2), (1, 0), (0, 1)])
 

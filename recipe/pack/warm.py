@@ -6,6 +6,7 @@ import re
 import struct
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,20 +82,34 @@ class ColdWarmer:
                 out.append(Span(prepared.path, base + self.starts[key], self.sizes[key]))
         return out
 
-    def warm(self, experts: Iterable[Expert], budget: int) -> int:
-        total, descriptors = 0, {}
+    CHUNK = 8 << 20
+
+    def warm(self, experts: Iterable[Expert], budget: int, workers: int = 8) -> int:
+        """Reads the spans (fadvise's WILLNEED stops at the read-ahead window): the page cache keeps what was read."""
+        chosen, total = [], 0
+        for span in self.spans(experts):
+            if total + span.length > budget:
+                break
+            chosen.append(span)
+            total += span.length
+        descriptors = {path: os.open(path, os.O_RDONLY) for path in {s.path for s in chosen}}
         try:
-            for span in self.spans(experts):
-                if total + span.length > budget:
-                    break
-                if span.path not in descriptors:
-                    descriptors[span.path] = os.open(span.path, os.O_RDONLY)
-                os.posix_fadvise(descriptors[span.path], span.start, span.length, os.POSIX_FADV_WILLNEED)
-                total += span.length
+            with ThreadPoolExecutor(workers) as pool:
+                list(pool.map(lambda s: self._read(descriptors[s.path], s), chosen))
         finally:
             for fd in descriptors.values():
                 os.close(fd)
         return total
+
+    def _read(self, fd: int, span: Span) -> None:
+        buffer = bytearray(min(self.CHUNK, span.length))
+        view = memoryview(buffer)
+        at, end = span.start, span.start + span.length
+        while at < end:
+            n = os.preadv(fd, [view[: min(self.CHUNK, end - at)]], at)
+            if n <= 0:
+                break
+            at += n
 
     @staticmethod
     def order(cold: Iterable[Expert], hits: Mapping[Expert, int]) -> list[Expert]:
