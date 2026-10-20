@@ -3,10 +3,11 @@
 # folder and the Hugging Face cache are mounted at their own paths.
 set -euo pipefail
 
+env_file=${DSV41_ENV_FILE:-$HOME/.config/dsv41.env}
+if [[ -f $env_file ]]; then set -a; source "$env_file"; set +a; fi
 image=${DSV41_TOOLBOX:-ghcr.io/loke-60000/dsv41-1xgb10-toolbox:latest}
 root=${DSV41_PATHS_ROOT:-$HOME/models/dsv41-1xgb10}
 hub=${DSV41_PATHS_HF_CACHE:-$HOME/.cache/huggingface/hub}
-env_file=${DSV41_ENV_FILE:-$HOME/.config/dsv41.env}
 socket=/var/run/docker.sock
 
 mkdir -p "$root" "$hub"
