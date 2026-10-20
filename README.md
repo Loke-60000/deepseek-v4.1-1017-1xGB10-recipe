@@ -23,12 +23,12 @@ packs the Engram shards, and the engine image is TensorFold's DeepSeek-V4.1 kit 
 
 ## Measured (one GB10, `serve` profile)
 
-Greedy, 512 tokens a request, warm page cache, mixed kinds back to back (`dsv41 speed`); prompts of 28K tokens
-prefill at ~960 tok/s warm (`dsv41 prefill`):
+Greedy, 512 tokens a request, warm page cache, mixed kinds back to back (`dsv41 speed`); new prompts of 25-37K
+tokens prefill at 850-1,370 tok/s warm (`dsv41 prefill`):
 
 | Streams | Prose per stream | Code per stream | Structured per stream | Aggregate | First token |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 26.7 tok/s | 27.0 tok/s | 28.0 tok/s | 26-28 tok/s | 0.3-0.4 s |
+| 1 | 29.4 tok/s | 30.5 tok/s | 29.9 tok/s | 29-30 tok/s | 0.3 s |
 | 4 | 24.0 | 24.8 | 24.6 | 92-97 | 0.5-1.0 s |
 | 8 (`serve8`) | 14 | 18 | 19 | 100-136 | 1.6-3.1 s |
 
@@ -50,6 +50,12 @@ requests are byte-identical with the derisked id loaded and running in the same 
 - **Expert top-p stays at 0.85.** Each token runs the fewest of its 6 routed experts that carry 85 % of the router
   weight. Exact top-6 (`TF_DSV41_EXPERT_TOPP` unset, as DeepSeek serves it) read 24 % more from NVMe and cut
   4-stream throughput by a third.
+- **A long new prompt costs the next few replies.** Its prefill runs every expert, so the whole 45 GiB cold set streams
+  through ~36 GiB of page cache and pushes out what decode reuses: right after an 8K and a 28K prompt, single-stream
+  decode drops to 10-19 tok/s and 4 streams to 48-80 tok/s until the cache follows the traffic again. Prompts that
+  share a prefix with an earlier one (agents, chats) prefill only their new tokens. Locking the 24 most-routed GiB of
+  the cold set in RAM (`mlock`) did not change this (10-19 / 57-84 tok/s) and left 15 GB available, so it was dropped:
+  the fix is fewer expert bytes or more RAM.
 - **Tried and dropped:** NVMe read-ahead (GPU faults do not take that path) and `MADV_HUGEPAGE` on the mappings (2 MiB
   faults pull neighbouring experts in and cost 25-45 % at 4 streams).
 
