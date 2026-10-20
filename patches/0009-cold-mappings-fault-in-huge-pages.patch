@@ -1,0 +1,13 @@
+diff --git a/zig/src/families/deepseek_v41/cold.zig b/zig/src/families/deepseek_v41/cold.zig
+index 3ac2056..9b1a476 100644
+--- a/zig/src/families/deepseek_v41/cold.zig
++++ b/zig/src/families/deepseek_v41/cold.zig
+@@ -56,6 +56,8 @@ pub const Mapping = struct {
+         defer file.close(io);
+         const len: usize = @intCast(try file.length(io));
+         const bytes = try std.posix.mmap(null, len, .{ .READ = true }, .{ .TYPE = .SHARED }, file.handle, 0);
++        // a fault reads (and maps) 2 MiB of the file, not 4 KiB: a cold expert comes in a few faults, at disk speed
++        std.posix.madvise(bytes.ptr, bytes.len, std.posix.MADV.HUGEPAGE) catch {};
+         std.posix.madvise(bytes.ptr, bytes.len, std.posix.MADV.WILLNEED) catch {};
+         return .{ .bytes = bytes };
+     }
