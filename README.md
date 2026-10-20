@@ -38,66 +38,18 @@ Known limits:
 - Each token runs the fewest of its 6 routed experts that carry 85 % of the router weight
   (`TF_DSV41_EXPERT_TOPP=0.85`). Running all 6 is a third slower here.
 
-## Setup
+## Running it
 
 ```bash
-cp .env.example .env                     # paths, model id, aliases, derisked id
-python3 -m recipe.cli image              # engine and toolbox images, patches applied
-python3 -m recipe.cli graft              # build the pack from the two Hub repos
-python3 -m recipe.cli engram             # pack the Engram tables
+cp .env.example .env
+python3 -m recipe.cli image && python3 -m recipe.cli graft && python3 -m recipe.cli engram
 python3 -m recipe.cli assets --profile serve
-python3 -m recipe.cli serve start --profile serve
-python3 -m recipe.cli serve warm --profile serve
-python3 -m recipe.cli serve smoke --profile serve
+python3 -m recipe.cli serve start --profile serve && python3 -m recipe.cli serve warm --profile serve
 ```
 
-The API listens on `http://<host>:8888/v1`; `serve stop` drains open requests first.
-
-Run `serve warm` after every start. It reads the most-used cold experts into memory and sends a few warm-up
-requests; without it, the first replies run at 8-17 tok/s while experts load from disk.
-
-`python3 -m recipe.cli units install` sets up two systemd user units (requires `loginctl enable-linger`):
-
-- `dsv41-guard` stops the server if available memory falls under 2.5 GiB. On unified memory the whole box freezes
-  before the OOM killer reacts.
-- `dsv41-warm` runs `serve warm` after each boot.
-
-## Configuration
-
-Settings come from `config/recipe.json` and `config/profiles/*.json`. Values in `.env` or the environment win:
-`DSV41_SERVE_*` for the API, any `TF_DSV41_*` for the engine.
-
-| Profile | For |
-|---|---|
-| `serve` | production: 4 slots x 256K, vision, prompt caching, 45 GiB of experts on disk |
-| `serve8` | 8 slots in the same KV pool: more total throughput, slower per stream |
-| `calibrate` | counts which experts get routed, to choose what stays on disk |
-| `native`, `bringup` | small single-slot boots for testing |
-
-To re-pick the experts that stay on disk: run the `calibrate` profile, send `dsv41 calibrate`, then
-`dsv41 cold --gib 45 --hits <hits file> --out config/cold/<name>.json`.
-
-## Derisked model id
-
-Set `DSV41_SERVE_ABLATE_MODEL=<id>` and run `dsv41 ablate` once. Requests for that id get the edit from
-[vcruz305's DERISKED pack](https://huggingface.co/vcruz305/DSV4.1-Flash-1017-DERISKED-EXL3-1.61bpw), applied at run
-time to the same weights. Other requests in the same batch are not affected.
-
-## Engine patches
-
-`patches/` applies to jayleaton's kit at the commit pinned in `config/recipe.json`.
-
-| Patch | Change |
-|---|---|
-| 0001 | AOT kernel list for a single GPU |
-| 0002 | cold experts read from the prepared files on disk |
-| 0003 | FP8 tensors in a grafted pack loaded as bytes |
-| 0004 | per-expert routing counters (`TF_DSV41_HITS`) |
-| 0005 | 1-bit experts in the prefill kernels |
-| 0006 | the derisked second model id |
-| 0007 | token log for training a draft model (`TF_DSV41_TRACE_TOKENS`) |
-| 0008 | sampling on the GPU for a single rank |
-| 0009 | fixes prompts of 7.2K-8.2K tokens failing with `Unbound` |
+The API is then on `http://<host>:8888/v1`. [docs/running.md](docs/running.md) covers each step, the boot units,
+profiles and settings, the derisked model id, re-picking the experts kept on disk, and benchmarking.
+[patches/](patches/README.md) lists the engine changes.
 
 ## Credits
 
