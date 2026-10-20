@@ -1,8 +1,8 @@
 name: images
 
+# An image build takes about an hour of arm64 runner time: build for release tags, or by hand from the Actions tab.
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 

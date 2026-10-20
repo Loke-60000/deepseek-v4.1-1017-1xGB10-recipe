@@ -1,15 +1,15 @@
 # Running it
 
-The engine and the recipe's tools ship as two images, built by GitHub Actions on every push to `main` and on every
-release tag:
+The engine and the recipe's tools ship as two images, built by GitHub Actions for every release:
 
 | Image | Holds |
 |---|---|
 | `ghcr.io/loke-60000/dsv41-1xgb10` | the patched TensorFold engine that serves the model |
 | `ghcr.io/loke-60000/dsv41-1xgb10-toolbox` | the recipe's CLI, its configs and the build tools |
 
-Tags: `latest` and `vX.Y.Z` for releases, `main` for the newest commit. A toolbox image always starts the engine image
-of its own tag. You do not need to clone this repo or build anything.
+Tags: `vX.Y.Z` for each release and `latest` for the newest one (`main` when a build is started by hand from the
+Actions tab). A toolbox image always starts the engine image of its own tag. You do not need to clone this repo or
+build anything.
 
 ## Install the launcher
 
