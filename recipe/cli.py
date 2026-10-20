@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 from recipe.ablate.job import DirectionJob
@@ -12,7 +13,7 @@ from recipe.bench.workload import Workload
 from recipe.image import Images
 from recipe.pack.cold import GIB, ColdPlanner, ExpertSizes
 from recipe.pack.graft import GraftBuilder
-from recipe.pack.warm import ColdWarmer, free_bytes
+from recipe.pack.warm import ColdWarmer, available_bytes
 from recipe.probe import Probe
 from recipe.profile import Profile
 from recipe.server import Server
@@ -113,8 +114,9 @@ def main() -> None:
         serve_options = Profile.load(args.profile).serve
         Probe(serve_options.port, serve_options.model_id).wait_ready()
         bench_prefill = PrefillBench(serve_options.port, serve_options.model_id)
+        salt = time.time_ns() % 100_000
         for i, n in enumerate(int(t) for t in args.tokens.split(",")):
-            print(bench_prefill.run(n, salt=i + 1).line(), flush=True)
+            print(bench_prefill.run(n, salt=salt + i).line(), flush=True)
     elif args.command == "serve":
         server = Server(settings, Profile.load(args.profile))
         actions = {"start": server.start, "stop": server.stop, "check": server.preflight}
@@ -126,7 +128,7 @@ def main() -> None:
             cold_set = ColdPlanner.read_set(sets / Path(server.profile.env["TF_DSV41_COLD"]).name)
             hits = ColdPlanner.read_hits(sets / "hits-calibration.json")
             warmer = ColdWarmer.of_pack(settings.paths.pack, server.prepared())
-            warmed = warmer.warm(ColdWarmer.order(cold_set, hits), free_bytes(int(args.keep_free_gib * GIB)))
+            warmed = warmer.warm(ColdWarmer.order(cold_set, hits), available_bytes(int(args.keep_free_gib * GIB)))
             print(f"asked the page cache for {warmed / GIB:.1f} GiB of cold experts, most routed first")
         elif args.action == "smoke":
             probe = Probe(server.profile.serve.port, server.profile.serve.model_id)

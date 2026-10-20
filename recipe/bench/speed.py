@@ -137,7 +137,7 @@ class PrefillBench:
     @staticmethod
     def _text(chars: int, salt: int) -> str:
         files = sorted(Path(sysconfig.get_paths()["stdlib"]).rglob("*.py"))
-        parts, total = [f"# run {salt}\n"], 0
+        parts, total = [f"# run {salt}: a fresh prompt, not a resumed session\n"], 0
         for path in files[salt % len(files) :] + files[: salt % len(files)]:
             chunk = path.read_text(errors="replace")
             parts.append(chunk)

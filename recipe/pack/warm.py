@@ -114,9 +114,10 @@ class ColdWarmer:
         raise KeyError(f"{prepared.path} has no routed {projection} tensor")
 
 
-def free_bytes(margin: int) -> int:
+def available_bytes(margin: int) -> int:
+    """MemAvailable less a margin: readahead reclaims colder page cache, so the budget is what can be made free."""
     fields: dict[str, int] = defaultdict(int)
     for line in Path("/proc/meminfo").read_text().splitlines():
         key, value = line.split(":", 1)
         fields[key] = int(value.split()[0]) * 1024
-    return max(fields["MemFree"] - margin, 0)
+    return max(fields["MemAvailable"] - margin, 0)
