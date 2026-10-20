@@ -40,16 +40,22 @@ Known limits:
 
 ## Running it
 
+The images are prebuilt on GitHub, so there is nothing to clone or compile:
+
 ```bash
-cp .env.example .env
-python3 -m recipe.cli image && python3 -m recipe.cli graft && python3 -m recipe.cli engram
-python3 -m recipe.cli assets --profile serve
-python3 -m recipe.cli serve start --profile serve && python3 -m recipe.cli serve warm --profile serve
+mkdir -p ~/.local/bin
+docker run --rm --entrypoint cat ghcr.io/loke-60000/dsv41-1xgb10-toolbox:latest /recipe/bin/dsv41 > ~/.local/bin/dsv41
+chmod +x ~/.local/bin/dsv41
+dsv41 graft && dsv41 engram && dsv41 assets --profile serve
+dsv41 serve start --profile serve
 ```
 
-The API is then on `http://<host>:8888/v1`. [docs/running.md](docs/running.md) covers each step, the boot units,
-profiles and settings, the derisked model id, re-picking the experts kept on disk, and benchmarking.
-[patches/](patches/README.md) lists the engine changes.
+The API is then on `http://<host>:8888/v1`.
+
+- [docs/running.md](docs/running.md): each step, settings and profiles, the derisked model id, benchmarks, and
+  working from a clone.
+- [AGENTS.md](AGENTS.md): read this first if you are an agent deploying the model.
+- [patches/](patches/README.md): the engine changes.
 
 ## Credits
 
