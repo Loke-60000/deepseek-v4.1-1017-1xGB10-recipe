@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -12,6 +13,9 @@ from recipe.probe import Probe
 class Answer:
     kind: str
     text: str
+
+
+CALL_ID = re.compile(r'"id": "call_[0-9a-f]+"')
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,7 @@ class Golden:
     @staticmethod
     def compare(reference: list[Answer], candidate: list[Answer]) -> list[Agreement]:
         def shared(a: str, b: str) -> float:
+            a, b = CALL_ID.sub('"id": "call"', a), CALL_ID.sub('"id": "call"', b)
             if a == b:
                 return 1.0
             n = next((i for i, (x, y) in enumerate(zip(a, b, strict=False)) if x != y), min(len(a), len(b)))
