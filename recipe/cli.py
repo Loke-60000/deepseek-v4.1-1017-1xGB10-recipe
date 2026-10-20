@@ -129,7 +129,14 @@ def main() -> None:
             hits = ColdPlanner.read_hits(sets / "hits-calibration.json")
             warmer = ColdWarmer.of_pack(settings.paths.pack, server.prepared())
             warmed = warmer.warm(ColdWarmer.order(cold_set, hits), available_bytes(int(args.keep_free_gib * GIB)))
-            print(f"asked the page cache for {warmed / GIB:.1f} GiB of cold experts, most routed first")
+            print(f"read {warmed / GIB:.1f} GiB of cold experts into the page cache, most routed first")
+            # then the traffic's own experts: a short reply of each kind and one long prompt
+            port, model = server.profile.serve.port, server.profile.serve.model_id
+            bench = SpeedBench(port, model, max_tokens=128)
+            for kind in PROMPTS:
+                bench.run(kind, 1)
+            PrefillBench(port, model).run(4096, salt=time.time_ns() % 100_000)
+            print("warmed with a short reply of each kind and a 4K prompt")
         elif args.action == "smoke":
             probe = Probe(server.profile.serve.port, server.profile.serve.model_id)
             print("models:", ", ".join(probe.wait_ready()))
