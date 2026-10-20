@@ -47,6 +47,9 @@ requests are byte-identical with the derisked id loaded and running in the same 
   of text it reaches 35-45 tok/s single-stream on code and JSON, so it is worth revisiting with more RAM.
 - **Memory levers already used:** DSpark experts from the SAGE pack (2.8 GiB instead of 6.3), `vm.min_free_kbytes`
   1 GiB instead of 4, the other GPU services on the box stopped.
+- **Expert top-p stays at 0.85.** Each token runs the fewest of its 6 routed experts that carry 85 % of the router
+  weight. Exact top-6 (`TF_DSV41_EXPERT_TOPP` unset, as DeepSeek serves it) read 24 % more from NVMe, cut 4-stream
+  throughput by a third and failed a long prefill with the same kernels.
 - **Tried and dropped:** NVMe read-ahead (GPU faults do not take that path) and `MADV_HUGEPAGE` on the mappings (2 MiB
   faults pull neighbouring experts in and cost 25-45 % at 4 streams).
 
