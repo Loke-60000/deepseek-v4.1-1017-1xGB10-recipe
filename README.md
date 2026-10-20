@@ -48,8 +48,8 @@ requests are byte-identical with the derisked id loaded and running in the same 
 - **Memory levers already used:** DSpark experts from the SAGE pack (2.8 GiB instead of 6.3), `vm.min_free_kbytes`
   1 GiB instead of 4, the other GPU services on the box stopped.
 - **Expert top-p stays at 0.85.** Each token runs the fewest of its 6 routed experts that carry 85 % of the router
-  weight. Exact top-6 (`TF_DSV41_EXPERT_TOPP` unset, as DeepSeek serves it) read 24 % more from NVMe, cut 4-stream
-  throughput by a third and failed a long prefill with the same kernels.
+  weight. Exact top-6 (`TF_DSV41_EXPERT_TOPP` unset, as DeepSeek serves it) read 24 % more from NVMe and cut
+  4-stream throughput by a third.
 - **Tried and dropped:** NVMe read-ahead (GPU faults do not take that path) and `MADV_HUGEPAGE` on the mappings (2 MiB
   faults pull neighbouring experts in and cost 25-45 % at 4 streams).
 
@@ -118,6 +118,7 @@ requests in the same batch are untouched, bit for bit.
 | 0006 | run-time ablation for a second model id |
 | 0007 | appending token log for drafter distillation; prefill calls under `TF_DSV41_SYNC_EACH` |
 | 0008 | single-rank sampling on the device, in vocabulary slices |
+| 0009 | the 4K prefill workspace holds every index row block's position: prompts of 7.2K-8.2K tokens failed with `Unbound` |
 
 ## Credits
 

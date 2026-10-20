@@ -1,0 +1,31 @@
+diff --git a/zig/src/families/deepseek_v41/forward_prefill.zig b/zig/src/families/deepseek_v41/forward_prefill.zig
+index fbc93e8..87f4f80 100644
+--- a/zig/src/families/deepseek_v41/forward_prefill.zig
++++ b/zig/src/families/deepseek_v41/forward_prefill.zig
+@@ -195,6 +195,7 @@ fn planWorkspace(f: *Forward, wp: *buffers.Plan, rows: u32, layers: []const u32)
+             const cs = try block_prefill.emitReplay(ka.allocator(), f.cfg, f.widths, o4, enc, K4.rows, start, .encoder);
+             try wp.add(try block_prefill.ownCalls(ka.allocator(), cs, K4.tag));
+         }
++        try k4BlockPositions(wp);
+     }
+     if (replay and f.opts.pf_tbo and rows >= 2 * block_prefill.tbo_min) {
+         const enc = try encoderLayers(f, layers);
+@@ -211,6 +212,18 @@ fn planWorkspace(f: *Forward, wp: *buffers.Plan, rows: u32, layers: []const u32)
+     }
+ }
+ 
++/// The index row blocks' positions ("L.ix.pos<j>", int32) a 4K segment can name: their count peaks at a middle start
++/// (it grows with the keys until the stream path takes over), which neither planned end reaches. A block holds 16 rows
++/// at least (block_prefill step).
++fn k4BlockPositions(wp: *buffers.Plan) !void {
++    var nb: [32]u8 = undefined;
++    for (0..K4.rows / 16) |j| {
++        const role = try block_prefill.ownRole(wp.a, try std.fmt.bufPrint(&nb, "L.ix.pos{d}", .{j}), K4.tag);
++        const g = try wp.sizes.getOrPut(wp.a, role);
++        if (g.found_existing) wp.a.free(role) else g.value_ptr.* = 4;
++    }
++}
++
+ /// The bytes the workspace allocates at a long prompt (its roles in the namespace, 256-aligned as k4Acquire lays them
+ /// out); 0 when neither TF_DSV41_PF_4K nor TF_DSV41_PF_TBO is on. Sized before the KV pool (kv_state.bootCheck prices it).
+ pub fn workspaceBytes(f: *Forward, rows: u32) !u64 {
