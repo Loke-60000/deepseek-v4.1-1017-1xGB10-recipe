@@ -8,7 +8,7 @@ import tempfile
 import urllib.error
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -233,7 +233,8 @@ class EvalRun:
         todo = [item for item in items if item.id not in done]
         print(f"{bench.name}: {len(items)} questions, {len(done)} already answered", flush=True)
         with ThreadPoolExecutor(self.concurrency) as pool, replies_path.open("a") as log:
-            for record in pool.map(self._ask, todo):
+            for future in as_completed([pool.submit(self._ask, item) for item in todo]):
+                record = future.result()
                 log.write(json.dumps(record) + "\n")
                 log.flush()
                 done[record["id"]] = record
