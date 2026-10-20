@@ -1,0 +1,232 @@
+diff --git a/zig/src/families/deepseek_v41/sampling_check.zig b/zig/src/families/deepseek_v41/sampling_check.zig
+index f0a07c4..2ad6d35 100644
+--- a/zig/src/families/deepseek_v41/sampling_check.zig
++++ b/zig/src/families/deepseek_v41/sampling_check.zig
+@@ -69,8 +69,8 @@ pub fn main(init: std.process.Init) !u8 {
+         const len = n * 2 * k;
+         const d_out = try dev.vtable.scratch(dev.ptr, 0, 4 * len);
+         const h_out = try ref.vtable.scratch(ref.ptr, 0, 4 * len);
+-        try dev.vtable.top(dev.ptr, d_lg.ptr, n, C, k, 64640, d_out);
+-        try ref.vtable.top(ref.ptr, h_lg, n, C, k, 64640, h_out);
++        try dev.vtable.top(dev.ptr, d_lg.ptr, n, C, C, k, 64640, d_out);
++        try ref.vtable.top(ref.ptr, h_lg, n, C, C, k, 64640, h_out);
+         const got = try gpa.alloc(u32, len);
+         defer gpa.free(got);
+         try dev.vtable.download(dev.ptr, d_out, std.mem.sliceAsBytes(got));
+@@ -117,8 +117,8 @@ pub fn main(init: std.process.Init) !u8 {
+         const k = 512;
+         const d_c = try dev.vtable.scratch(dev.ptr, 0, 4 * n * 2 * k);
+         const h_c = try ref.vtable.scratch(ref.ptr, 0, 4 * n * 2 * k);
+-        try dev.vtable.top(dev.ptr, d_lg.ptr, n, C, k, 0, d_c);
+-        try ref.vtable.top(ref.ptr, h_lg, n, C, k, 0, h_c);
++        try dev.vtable.top(dev.ptr, d_lg.ptr, n, C, C, k, 0, d_c);
++        try ref.vtable.top(ref.ptr, h_lg, n, C, C, k, 0, h_c);
+         const dc = try gpa.alloc(f32, n * 2 * k);
+         defer gpa.free(dc);
+         try dev.vtable.download(dev.ptr, d_c, std.mem.sliceAsBytes(dc));
+diff --git a/zig/src/families/deepseek_v41/sampling_dev.zig b/zig/src/families/deepseek_v41/sampling_dev.zig
+index 1b1e163..3609c97 100644
+--- a/zig/src/families/deepseek_v41/sampling_dev.zig
++++ b/zig/src/families/deepseek_v41/sampling_dev.zig
+@@ -50,11 +50,11 @@ pub const Gpu = struct {
+         return @ptrCast(@alignCast(p));
+     }
+ 
+-    fn top(p: *anyopaque, lg: u64, n: usize, C: usize, k: usize, id0: u32, out: u64) anyerror!void {
++    fn top(p: *anyopaque, lg: u64, n: usize, C: usize, ld: usize, k: usize, id0: u32, out: u64) anyerror!void {
+         const g = self_(p);
+         const vals = try scratch(p, 5, 4 * n * k);
+         const cols = try scratch(p, 6, 8 * n * k);
+-        try g.kernels.others(g.stream).topKeys(lg, C, n, C, k, vals, cols);
++        try g.kernels.others(g.stream).topKeys(lg, ld, n, C, k, vals, cols);
+         try g.fns.pack(g.stream, vals, cols, n, k, id0, out);
+     }
+ 
+diff --git a/zig/src/families/deepseek_v41/sampling_gpu.zig b/zig/src/families/deepseek_v41/sampling_gpu.zig
+index 3da056e..396a6fd 100644
+--- a/zig/src/families/deepseek_v41/sampling_gpu.zig
++++ b/zig/src/families/deepseek_v41/sampling_gpu.zig
+@@ -135,7 +135,7 @@ pub const GpuSampler = struct {
+         const h = x.f.after_sample orelse return false;
+         const r = x.f.runner;
+         const ops = r.kernels.others(r.stream);
+-        const W: usize = x.f.comm.world();
++        const W: usize = x.p.parts;
+         if (ops.f.vs_choose == null or W * k > kops.glue.vs_max) return false;
+         const r0 = segs[0].row0;
+         var any = false;
+@@ -180,7 +180,7 @@ pub const GpuSampler = struct {
+         if (x.f.comm.rank() != 0) return;
+         const V: usize = x.p.V;
+         const count = pipe.countOf(s, @intCast(V * x.f.comm.world()), x.p.nucleus);
+-        const kind: u3 = if (@min(count, V) > pipe.max_k or V > pipe.max_cols) 0 else if (isNucleusRow(s)) 1 else 2;
++        const kind: u3 = if (@min(count, V) > pipe.max_k or x.p.part_cols > pipe.max_cols) 0 else if (isNucleusRow(s)) 1 else 2;
+         const bit = @as(u8, 1) << (kind + @as(u3, if (batched) 3 else 0));
+         if (x.seen & bit != 0) return;
+         x.seen |= bit;
+@@ -266,7 +266,7 @@ pub const GpuSampler = struct {
+         const p0 = c.pos0 orelse return false;
+         const r = x.f.runner;
+         const ops = r.kernels.others(r.stream);
+-        const W: usize = x.f.comm.world();
++        const W: usize = x.p.parts;
+         if (ops.f.vs_choose == null or pipe.sampled(c.s) == false or isNucleusRow(c.s) or W * k > kops.glue.vs_max) return false;
+         try x.ensureDevice(host.len, n);
+         try r.d.check(r.d.api.cuMemcpyDtoHAsync_v2(x.pinned.?.bytes.ptr, gathered, host.len, r.stream.handle), "cuMemcpyDtoHAsync");
+diff --git a/zig/src/families/deepseek_v41/sampling_pipe.zig b/zig/src/families/deepseek_v41/sampling_pipe.zig
+index d6395dc..096d613 100644
+--- a/zig/src/families/deepseek_v41/sampling_pipe.zig
++++ b/zig/src/families/deepseek_v41/sampling_pipe.zig
+@@ -30,8 +30,9 @@ pub const Device = struct {
+     vtable: *const VTable,
+ 
+     pub const VTable = struct {
+-        /// Each row's best k (value desc, then the lower column), packed fp32 [n, 2k] at `out` with ids column + id0.
+-        top: *const fn (ptr: *anyopaque, lg: u64, n: usize, C: usize, k: usize, id0: u32, out: u64) anyerror!void,
++        /// Each row's best k of its C columns (value desc, then the lower column; rows `ld` floats apart), packed fp32
++        /// [n, 2k] at `out` with ids column + id0.
++        top: *const fn (ptr: *anyopaque, lg: u64, n: usize, C: usize, ld: usize, k: usize, id0: u32, out: u64) anyerror!void,
+         /// float64 [n, 2] at `out`: each row's (max, sum exp(v / t - max / t)).
+         stats: *const fn (ptr: *anyopaque, lg: u64, n: usize, C: usize, t: f64, out: u64) anyerror!void,
+         /// Scratch slot `slot` of at least `bytes` (grown, kept).
+@@ -158,6 +159,10 @@ pub const Pipe = struct {
+     after_gather: ?AfterGather = null,
+     /// rows taken whole in the last call (the nucleus fallback or k > max_k): the tests' and logs' count
+     whole_rows: usize = 0,
++    /// candidate slices a row: the ranks' vocabulary slices, or one rank's row cut into slices within the device
++    /// top-k's columns (one rank's 129,280), gathered [parts][n][2k] and merged alike
++    parts: usize = 1,
++    part_cols: usize = 0,
+ 
+     pub fn init(gpa: std.mem.Allocator, comm: tp.collective.Collective, V: u32, nucleus: u32) !Pipe {
+         const vocab: usize = @as(usize, V) * comm.world();
+@@ -165,7 +170,9 @@ pub const Pipe = struct {
+         errdefer picker.deinit();
+         const values = try gpa.alloc(f32, vocab);
+         errdefer gpa.free(values);
+-        return .{ .gpa = gpa, .comm = comm, .V = V, .nucleus = nucleus, .picker = picker, .values = values, .ids = try gpa.alloc(u32, vocab) };
++        const W = comm.world();
++        const parts: usize = if (W > 1) W else std.math.divCeil(usize, V, max_cols) catch unreachable;
++        return .{ .gpa = gpa, .comm = comm, .V = V, .nucleus = nucleus, .picker = picker, .values = values, .ids = try gpa.alloc(u32, vocab), .parts = parts, .part_cols = if (W > 1) V else std.math.divCeil(usize, V, parts) catch unreachable };
+     }
+ 
+     pub fn deinit(p: *Pipe) void {
+@@ -192,20 +199,17 @@ pub const Pipe = struct {
+         const k = @min(count, V);
+         p.whole_rows = 0;
+         try p.picks.resize(p.gpa, n);
+-        if (k > max_k or V > max_cols) {
++        const nuc = smp.isNucleus(s) and p.nucleus > 0;
++        if (k > max_k or p.part_cols > max_cols or (nuc and p.parts != W)) {
+             // every row whole (top_k 0 without the nucleus path, a top_k past the device bound, or one rank's 129,280)
+             p.full.clearRetainingCapacity();
+             for (0..n) |r| try p.full.append(p.gpa, @intCast(r));
+             return p.wholeRows(dev, lg, s, count, positions, out);
+         }
+-        const nuc = smp.isNucleus(s) and p.nucleus > 0;
+         const vt = dev.vtable;
+         const stream = vt.stream(dev.ptr);
+         const row_f32 = 2 * k;
+-        const packed_ = try vt.scratch(dev.ptr, 0, 4 * n * row_f32);
+-        const gathered = try vt.scratch(dev.ptr, 1, 4 * W * n * row_f32);
+-        try vt.top(dev.ptr, lg, n, V, k, @intCast(p.comm.rank() * V), packed_);
+-        try p.comm.allGather(packed_, gathered, n * row_f32, .f32, stream);
++        const gathered = try p.candidates(dev, lg, n, k);
+         var stats_dev: u64 = 0;
+         if (nuc) {
+             const st = try vt.scratch(dev.ptr, 2, 16 * n);
+@@ -213,13 +217,13 @@ pub const Pipe = struct {
+             try vt.stats(dev.ptr, lg, n, V, s.temperature, st);
+             try p.comm.allGather(st, stats_dev, 2 * n, .f64, stream);
+         }
+-        const cand_bytes = 4 * W * n * row_f32;
++        const cand_bytes = 4 * p.parts * n * row_f32;
+         const stat_bytes: usize = if (nuc) 16 * W * n else 0;
+         const host = try p.hostBytes(cand_bytes + stat_bytes);
+         const taken = if (p.after_gather) |h| try h.run(h.ctx, gathered, n, k, count, host[0..cand_bytes]) else false;
+         if (!taken) try vt.download(dev.ptr, gathered, host[0..cand_bytes]);
+         if (nuc) try vt.download(dev.ptr, stats_dev, host[cand_bytes..][0..stat_bytes]);
+-        const cand: smp.Candidates = .{ .data = @alignCast(std.mem.bytesAsSlice(f32, host[0..cand_bytes])), .world = @intCast(W), .rows = @intCast(n), .k = @intCast(k) };
++        const cand: smp.Candidates = .{ .data = @alignCast(std.mem.bytesAsSlice(f32, host[0..cand_bytes])), .world = @intCast(p.parts), .rows = @intCast(n), .k = @intCast(k) };
+         const all_stats: []const f64 = if (nuc) @alignCast(std.mem.bytesAsSlice(f64, host[cand_bytes..][0..stat_bytes])) else &.{};
+         var stats: [tp.host.max_ranks][2]f64 = undefined;
+         p.full.clearRetainingCapacity();
+@@ -238,6 +242,26 @@ pub const Pipe = struct {
+         if (p.full.items.len > 0) try p.wholeRows(dev, lg, s, 0, positions, out);
+     }
+ 
++    /// Each row's best k into the gathered candidates [parts][n][2k]: every rank's slice, or one rank's row in
++    /// slices of at most `max_cols` columns (the same layout: the merge cannot tell them apart).
++    fn candidates(p: *Pipe, dev: Device, lg: u64, n: usize, k: usize) !u64 {
++        const vt = dev.vtable;
++        const V: usize = p.V;
++        const row_bytes = 4 * n * 2 * k;
++        const gathered = try vt.scratch(dev.ptr, 1, p.parts * row_bytes);
++        if (p.comm.world() > 1) {
++            const packed_ = try vt.scratch(dev.ptr, 0, row_bytes);
++            try vt.top(dev.ptr, lg, n, V, V, k, @intCast(p.comm.rank() * V), packed_);
++            try p.comm.allGather(packed_, gathered, n * 2 * k, .f32, vt.stream(dev.ptr));
++            return gathered;
++        }
++        for (0..p.parts) |j| {
++            const c0 = j * p.part_cols;
++            try vt.top(dev.ptr, lg + 4 * c0, n, @min(p.part_cols, V - c0), V, k, @intCast(c0), gathered + j * row_bytes);
++        }
++        return gathered;
++    }
++
+     /// The rows in `full`, each gathered whole (every rank's vocabulary slice, rank order) and picked from all of its
+     /// tokens (``count`` = their cut; 0: all of them, the nucleus fallback's ``fw.vocab``).
+     fn wholeRows(p: *Pipe, dev: Device, lg: u64, s: Sampling, count: usize, positions: ?[]const u64, out: []u32) !void {
+@@ -268,7 +292,7 @@ pub const Pipe = struct {
+     /// Whether `chooseSegments` takes a segment under `s`: a keyed row on the candidates' path (top_k rows, or nucleus
+     /// rows with TF_DSV41_NUCLEUS on), its count within the device top-k and one rank's slice within its columns.
+     pub fn batchable(p: *const Pipe, s: Sampling) bool {
+-        if (!sampled(s) or p.V > max_cols) return false;
++        if (!sampled(s) or p.part_cols > max_cols or (smp.isNucleus(s) and p.parts != p.comm.world())) return false;
+         return @min(countOf(s, @intCast(@as(usize, p.V) * p.comm.world()), p.nucleus), p.V) <= max_k;
+     }
+ 
+@@ -311,10 +335,7 @@ pub const Pipe = struct {
+         const stream = vt.stream(dev.ptr);
+         const row_f32 = 2 * k;
+         const span = lg + 4 * @as(u64, r0) * V;
+-        const packed_ = try vt.scratch(dev.ptr, 0, 4 * n * row_f32);
+-        const gathered = try vt.scratch(dev.ptr, 1, 4 * W * n * row_f32);
+-        try vt.top(dev.ptr, span, n, V, k, @intCast(p.comm.rank() * V), packed_);
+-        try p.comm.allGather(packed_, gathered, n * row_f32, .f32, stream);
++        const gathered = try p.candidates(dev, span, n, k);
+         var stats_dev: u64 = 0;
+         if (nuc) {
+             const st = try vt.scratch(dev.ptr, 2, 16 * n);
+@@ -322,13 +343,13 @@ pub const Pipe = struct {
+             for (segs) |g| if (smp.isNucleus(g.s)) try vt.stats(dev.ptr, lg + 4 * @as(u64, g.row0) * V, g.n, V, g.s.temperature, st + 16 * (g.row0 - r0));
+             try p.comm.allGather(st, stats_dev, 2 * n, .f64, stream);
+         }
+-        const cand_bytes = 4 * W * n * row_f32;
++        const cand_bytes = 4 * p.parts * n * row_f32;
+         const stat_bytes: usize = if (nuc) 16 * W * n else 0;
+         const host = try p.hostBytes(cand_bytes + stat_bytes);
+         const taken = if (hook) |h| try h.run(h.ctx, gathered, n, k, segs, host[0..cand_bytes]) else false;
+         if (!taken) try vt.download(dev.ptr, gathered, host[0..cand_bytes]);
+         if (nuc) try vt.download(dev.ptr, stats_dev, host[cand_bytes..][0..stat_bytes]);
+-        const cand: smp.Candidates = .{ .data = @alignCast(std.mem.bytesAsSlice(f32, host[0..cand_bytes])), .world = @intCast(W), .rows = @intCast(n), .k = @intCast(k) };
++        const cand: smp.Candidates = .{ .data = @alignCast(std.mem.bytesAsSlice(f32, host[0..cand_bytes])), .world = @intCast(p.parts), .rows = @intCast(n), .k = @intCast(k) };
+         const all_stats: []const f64 = if (nuc) @alignCast(std.mem.bytesAsSlice(f64, host[cand_bytes..][0..stat_bytes])) else &.{};
+         var stats: [tp.host.max_ranks][2]f64 = undefined;
+         // every pick from the downloaded rows first (a whole row reuses the host buffer), the whole rows after
+@@ -389,12 +410,12 @@ pub const HostDevice = struct {
+         return @as(u64, mono) << 32 | (0xFFFF_FFFF - @as(u32, @intCast(col)));
+     }
+ 
+-    fn top(p: *anyopaque, lg: u64, n: usize, C: usize, k: usize, id0: u32, out: u64) anyerror!void {
++    fn top(p: *anyopaque, lg: u64, n: usize, C: usize, ld: usize, k: usize, id0: u32, out: u64) anyerror!void {
+         const h = self_(p);
+         try h.keys.resize(h.gpa, C);
+         const o = f32s(out, n * 2 * k);
+         for (0..n) |r| {
+-            const row = f32s(lg + 4 * r * C, C);
++            const row = f32s(lg + 4 * r * ld, C);
+             for (h.keys.items, row, 0..) |*kk, v, c| kk.* = key(v, c);
+             std.sort.pdq(u64, h.keys.items, {}, std.sort.desc(u64));
+             for (h.keys.items[0..k], 0..) |kk, j| {
