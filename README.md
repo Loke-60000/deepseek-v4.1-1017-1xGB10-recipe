@@ -19,15 +19,9 @@ stay on the SSD:
 
 ## Speed
 
-Greedy decoding, 512 tokens per request, warm cache:
+<p align="center"><img src="docs/assets/speed.png" alt="1 stream: 29-30 tok/s, first token 0.3 s; 4 streams: 92-97 tok/s in total, 24-25 per stream, first token 0.5-1.0 s; 8 streams: 100-136 tok/s in total, 14-19 per stream, first token 1.6-3.1 s. Prefill 850-1,370 tok/s. Accuracy on GPQA Diamond, AIME 2025, HumanEval+ and MMLU-Pro is being measured; the full model scores 90.9 % on GPQA Diamond." width="100%"></p>
 
-| Streams | Per stream | Total | First token |
-|---:|---:|---:|---:|
-| 1 | 29-30 tok/s | 29-30 tok/s | 0.3 s |
-| 4 | 24-25 tok/s | 92-97 tok/s | 0.5-1.0 s |
-| 8 (`serve8`) | 14-19 tok/s | 100-136 tok/s | 1.6-3.1 s |
-
-New prompts of 25-37K tokens prefill at 850-1,370 tok/s.
+Greedy decoding, 512 tokens per request, warm cache. Accuracy runs on the same box at high reasoning effort.
 
 Known limits:
 
