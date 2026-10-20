@@ -1,0 +1,6 @@
+{
+  "extends": "serve",
+  "env": {
+    "TF_DSV41_SLOTS": "8"
+  }
+}
