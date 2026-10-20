@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from pathlib import Path
 
 from recipe.ablate.job import DirectionJob
 from recipe.assets import AssetBuilder, EngramPacker
+from recipe.bench.evals import AIME2025, Benchmark, EvalRun, GPQADiamond, HumanEvalPlus, MMLUPro
 from recipe.bench.golden import Golden
 from recipe.bench.runner import WorkloadRunner
 from recipe.bench.speed import PROMPTS, PrefillBench, SpeedBench
@@ -53,6 +55,12 @@ def main() -> None:
     prefill = commands.add_parser("prefill", help="first-token time of long prompts")
     prefill.add_argument("--profile", default="base")
     prefill.add_argument("--tokens", default="8192,32768,131072")
+    evals = commands.add_parser("eval", help="accuracy on GPQA Diamond, AIME 2025, MMLU-Pro and HumanEval+")
+    evals.add_argument("--profile", default="base")
+    evals.add_argument("--bench", default="gpqa-diamond,aime-2025,humaneval-plus,mmlu-pro")
+    evals.add_argument("--effort", default="high")
+    evals.add_argument("--max-tokens", type=int, default=32768)
+    evals.add_argument("--concurrency", type=int, default=4)
     keep = commands.add_parser("keep", help="the keeper container's loop: memory guard and warm-up after each start")
     keep.add_argument("--profile", default="base")
     serve = commands.add_parser("serve", help="run the server for a profile")
@@ -119,6 +127,20 @@ def main() -> None:
         salt = time.time_ns() % 100_000
         for i, n in enumerate(int(t) for t in args.tokens.split(",")):
             print(bench_prefill.run(n, salt=salt + i).line(), flush=True)
+    elif args.command == "eval":
+        serve_options = Profile.load(args.profile).serve
+        probe = Probe(serve_options.port, serve_options.model_id, timeout=7200)
+        probe.wait_ready()
+        out, cache = settings.paths.state / "evals", settings.paths.hf_cache
+        benches: dict[str, Benchmark] = {
+            "gpqa-diamond": GPQADiamond(cache),
+            "aime-2025": AIME2025(cache),
+            "humaneval-plus": HumanEvalPlus(cache, settings.image.toolbox_tag, out / "sandbox"),
+            "mmlu-pro": MMLUPro(cache),
+        }
+        run = EvalRun(probe, out, args.concurrency, args.max_tokens, args.effort)
+        for name in args.bench.split(","):
+            print(json.dumps(run.run(benches[name])), flush=True)
     elif args.command == "keep":
         Keeper(Server(settings, Profile.load(args.profile))).watch()
     elif args.command == "serve":

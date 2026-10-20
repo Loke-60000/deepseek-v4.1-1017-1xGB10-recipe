@@ -22,9 +22,10 @@ class Reply:
 class Probe:
     """A client for the served OpenAI API: readiness, then answers that must be right."""
 
-    def __init__(self, port: int, model: str, host: str = "127.0.0.1"):
+    def __init__(self, port: int, model: str, host: str = "127.0.0.1", timeout: float = 600):
         self.base = f"http://{host}:{port}/v1"
         self.model = model
+        self.timeout = timeout
 
     def wait_ready(self, timeout: float = 1800, every: float = 5) -> list[str]:
         deadline = time.monotonic() + timeout
@@ -74,5 +75,5 @@ class Probe:
         request = urllib.request.Request(
             self.base + path, data=data, method=method, headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(request, timeout=600) as response:
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
             return json.load(response)
