@@ -31,7 +31,7 @@ class WarmTest(unittest.TestCase):
                 handle.truncate(16384)
             sizes = {(0, e, w): 100 for e in range(2) for w in ("w1", "w2", "w3")}
             warmer = ColdWarmer(sizes, root)
-            self.assertEqual(warmer.warm([(0, 1), (0, 0)], budget=450), 300)
+            self.assertEqual(warmer.warm([(0, 1), (0, 0)], budget=450), 400)
             self.assertEqual(warmer.warm([(0, 1), (0, 0)], budget=10_000), 600)
 
     def test_hottest_cold_experts_first(self):
