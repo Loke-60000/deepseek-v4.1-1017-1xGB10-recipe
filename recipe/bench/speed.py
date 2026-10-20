@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import statistics
+import sysconfig
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 
 PROMPTS = {
     "prose": "Write a long, detailed essay about the history of navigation at sea, from the stars to satellites.",
@@ -94,3 +96,52 @@ class SpeedBench:
         ended = time.monotonic()
         ttft = (first or ended) - started
         return Stream(ttft, max(tokens - 1, 0) / max(ended - (first or started), 1e-9), tokens, ended - started)
+
+
+@dataclass(frozen=True)
+class Prefill:
+    prompt_tokens: int
+    ttft: float
+
+    @property
+    def rate(self) -> float:
+        return self.prompt_tokens / self.ttft if self.ttft else 0.0
+
+    def line(self) -> str:
+        return f"prefill {self.prompt_tokens:7d} tokens  first token {self.ttft:7.2f} s  {self.rate:7.0f} tok/s"
+
+
+class PrefillBench:
+    """Long prompts of real source text (about 3.4 characters a token), timed to their first token."""
+
+    CHARS_PER_TOKEN = 3.4
+
+    def __init__(self, port: int, model: str, host: str = "127.0.0.1"):
+        self.bench = SpeedBench(port, model, max_tokens=8, host=host)
+
+    def run(self, tokens: int, salt: int = 0) -> Prefill:
+        text = self._text(int(tokens * self.CHARS_PER_TOKEN), salt)
+        prompt = f"Here is a codebase dump. Reply with the word OK.\n\n{text}"
+        stream = self.bench._stream(prompt)
+        return Prefill(self._prompt_tokens(prompt), stream.ttft)
+
+    def _prompt_tokens(self, prompt: str) -> int:
+        body = {"model": self.bench.model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 1}
+        request = urllib.request.Request(
+            self.bench.url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(request, timeout=3600) as response:
+            usage: dict[str, int] = json.load(response).get("usage", {})
+        return usage.get("prompt_tokens", 0)
+
+    @staticmethod
+    def _text(chars: int, salt: int) -> str:
+        files = sorted(Path(sysconfig.get_paths()["stdlib"]).rglob("*.py"))
+        parts, total = [f"# run {salt}\n"], 0
+        for path in files[salt % len(files) :] + files[: salt % len(files)]:
+            chunk = path.read_text(errors="replace")
+            parts.append(chunk)
+            total += len(chunk)
+            if total >= chars:
+                break
+        return "".join(parts)[:chars]

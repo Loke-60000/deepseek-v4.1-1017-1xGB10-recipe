@@ -7,7 +7,7 @@ from recipe.ablate.job import DirectionJob
 from recipe.assets import AssetBuilder, EngramPacker
 from recipe.bench.golden import Golden
 from recipe.bench.runner import WorkloadRunner
-from recipe.bench.speed import PROMPTS, SpeedBench
+from recipe.bench.speed import PROMPTS, PrefillBench, SpeedBench
 from recipe.bench.workload import Workload
 from recipe.image import Images
 from recipe.pack.cold import GIB, ColdPlanner, ExpertSizes
@@ -48,6 +48,9 @@ def main() -> None:
     speed.add_argument("--kinds", default=",".join(PROMPTS))
     speed.add_argument("--concurrency", default="1,2,4")
     speed.add_argument("--max-tokens", type=int, default=512)
+    prefill = commands.add_parser("prefill", help="first-token time of long prompts")
+    prefill.add_argument("--profile", default="base")
+    prefill.add_argument("--tokens", default="8192,32768,131072")
     serve = commands.add_parser("serve", help="run the server for a profile")
     serve.add_argument("action", choices=["start", "stop", "check", "dry-run", "smoke"])
     serve.add_argument("--profile", default="base")
@@ -104,6 +107,12 @@ def main() -> None:
         for level in (int(c) for c in args.concurrency.split(",")):
             for kind in args.kinds.split(","):
                 print(bench.run(kind, level).line(), flush=True)
+    elif args.command == "prefill":
+        serve_options = Profile.load(args.profile).serve
+        Probe(serve_options.port, serve_options.model_id).wait_ready()
+        bench_prefill = PrefillBench(serve_options.port, serve_options.model_id)
+        for i, n in enumerate(int(t) for t in args.tokens.split(",")):
+            print(bench_prefill.run(n, salt=i + 1).line(), flush=True)
     elif args.command == "serve":
         server = Server(settings, Profile.load(args.profile))
         actions = {"start": server.start, "stop": server.stop, "check": server.preflight}
