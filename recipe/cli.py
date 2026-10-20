@@ -42,6 +42,7 @@ def main() -> None:
     golden.add_argument("action", choices=["record", "check"])
     golden.add_argument("--profile", default="base")
     golden.add_argument("--file", type=Path, required=True)
+    golden.add_argument("--model", help="model id to ask (default: the profile's)")
     speed = commands.add_parser("speed", help="decode rate, aggregate throughput and first-token time")
     speed.add_argument("--profile", default="base")
     speed.add_argument("--kinds", default=",".join(PROMPTS))
@@ -87,7 +88,7 @@ def main() -> None:
         print(DirectionJob(settings, rank=args.rank).build())
     elif args.command == "golden":
         serve_options = Profile.load(args.profile).serve
-        probe = Probe(serve_options.port, serve_options.model_id)
+        probe = Probe(serve_options.port, args.model or serve_options.model_id)
         probe.wait_ready()
         answers = Golden(probe).record()
         if args.action == "record":
