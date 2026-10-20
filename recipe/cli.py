@@ -47,6 +47,9 @@ def main() -> None:
     golden.add_argument("--profile", default="base")
     golden.add_argument("--file", type=Path, required=True)
     golden.add_argument("--model", help="model id to ask (default: the profile's)")
+    golden.add_argument("--max-tokens", type=int, default=64)
+    golden.add_argument("--concurrency", type=int, default=1)
+    golden.add_argument("--stagger", type=float, default=0.0, help="seconds between concurrent starts")
     speed = commands.add_parser("speed", help="decode rate, aggregate throughput and first-token time")
     speed.add_argument("--profile", default="base")
     speed.add_argument("--kinds", default=",".join(PROMPTS))
@@ -106,7 +109,7 @@ def main() -> None:
         serve_options = Profile.load(args.profile).serve
         probe = Probe(serve_options.port, args.model or serve_options.model_id)
         probe.wait_ready()
-        answers = Golden(probe).record()
+        answers = Golden(probe, max_tokens=args.max_tokens).record(args.concurrency, args.stagger)
         if args.action == "record":
             Golden.save(answers, args.file)
             print(f"{args.file}: {len(answers)} answers")

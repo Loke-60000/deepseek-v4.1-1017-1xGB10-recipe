@@ -1,6 +1,8 @@
+import json
 import unittest
 
 from recipe.bench.golden import Answer, Golden
+from recipe.probe import Reply
 
 
 class GoldenTest(unittest.TestCase):
@@ -13,6 +15,14 @@ class GoldenTest(unittest.TestCase):
         a = [Answer("tools", '[{"id": "call_8101bc66", "function": {"name": "f"}}]')]
         b = [Answer("tools", '[{"id": "call_6755fe7e", "function": {"name": "f"}}]')]
         self.assertEqual(Golden.compare(a, b)[0].shared_prefix, 1.0)
+
+    def test_concurrent_recording_keeps_request_order(self):
+        class Echo:
+            def complete(self, messages, max_tokens, extra=None, model=None):
+                return Reply(json.dumps(messages)[-40:], 1, 0.0)
+
+        golden = Golden(Echo(), per_kind=1)
+        self.assertEqual(golden.record(), golden.record(concurrency=3, stagger=0.01))
 
 
 if __name__ == "__main__":

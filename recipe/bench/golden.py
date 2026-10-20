@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -33,8 +35,17 @@ class Golden:
             Request(r.kind, r.messages, max_tokens, r.extra) for r in Workload(seed=4242).requests(per_kind)
         ]
 
-    def record(self) -> list[Answer]:
-        return [Answer(r.kind, self.probe.complete(r.messages, r.max_tokens, r.extra).text) for r in self.requests]
+    def record(self, concurrency: int = 1, stagger: float = 0.0) -> list[Answer]:
+        """The answers in request order. With several at once, starts `stagger` seconds apart: the number of live
+        requests then changes in the middle of answers, which is what a batch-dependent policy must not notice."""
+
+        def ask(i: int) -> Answer:
+            time.sleep(i % concurrency * stagger)
+            r = self.requests[i]
+            return Answer(r.kind, self.probe.complete(r.messages, r.max_tokens, r.extra).text)
+
+        with ThreadPoolExecutor(concurrency) as pool:
+            return list(pool.map(ask, range(len(self.requests))))
 
     @staticmethod
     def save(answers: list[Answer], path: Path) -> None:
