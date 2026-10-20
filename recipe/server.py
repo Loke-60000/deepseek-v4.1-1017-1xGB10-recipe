@@ -119,7 +119,7 @@ class Server:
             env=self.environment(),
             name=self.CONTAINER,
             detach=detach,
-            options=["--cap-add", "IPC_LOCK"],
+            options=["--cap-add", "IPC_LOCK", "--restart", "unless-stopped"],
         )
 
     @staticmethod
