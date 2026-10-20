@@ -1,24 +1,29 @@
 from __future__ import annotations
 
+import os
 import re
 import shlex
+import shutil
 import struct
 import subprocess
 from pathlib import Path
 
 from recipe.ablate.job import DIRECTIONS
 from recipe.docker import DockerRun, Mount
-from recipe.profile import Profile
-from recipe.settings import REPO_ROOT, Settings
+from recipe.profile import ENGINE_PREFIXES, Profile
+from recipe.settings import REPO_ROOT, Environment, Settings
 
 ROPE_MARGIN = 2048
 REQUIRED_ASSETS = ("rope.bin", "engram-host.bin", "aot/aot.json", "sigs.json")
+SHIPPED_COLD = REPO_ROOT / "config" / "cold"
+DOCKER_SOCKET = Path("/var/run/docker.sock")
 
 
 class Server:
     """The single-rank tensorfold-dsv41 container for one profile."""
 
     CONTAINER = "dsv41"
+    KEEPER = "dsv41-keeper"
 
     def __init__(self, settings: Settings, profile: Profile):
         self.settings = settings
@@ -28,12 +33,26 @@ class Server:
     def start(self) -> None:
         self.preflight()
         self.check_aot()
+        self.stage_cold()
         self._container(detach=True).run()
+        subprocess.run(["docker", "rm", "-f", self.KEEPER], check=False, capture_output=True)
+        self._keeper().run()
 
     def stop(self) -> None:
         drain = int(self.profile.env.get("TF_DSV41_DRAIN_S", "20"))
         subprocess.run(["docker", "stop", "-t", str(drain + 60), self.CONTAINER], check=False)
         subprocess.run(["docker", "rm", self.CONTAINER], check=False, capture_output=True)
+        subprocess.run(["docker", "rm", "-f", self.KEEPER], check=False, capture_output=True)
+
+    def stage_cold(self) -> None:
+        """Copies the shipped cold expert sets next to the model, where the server and the keeper read them; sets
+        of your own in that folder are left alone."""
+        target = self.settings.paths.cold
+        target.mkdir(parents=True, exist_ok=True)
+        for shipped in SHIPPED_COLD.glob("*.json"):
+            copy = target / shipped.name
+            if not copy.exists() or copy.read_bytes() != shipped.read_bytes():
+                shutil.copyfile(shipped, copy)
 
     def prepared(self) -> Path:
         """The prepared folder the running server loaded (its boot log names it)."""
@@ -122,13 +141,40 @@ class Server:
                 Mount(paths.state, "/state", read_only=False),
                 Mount(paths.state / "sessions", "/sessions", read_only=False),
                 Mount(paths.cache, "/cache", read_only=False),
-                Mount(REPO_ROOT / "config" / "cold", "/cold"),
+                Mount(paths.cold, "/cold"),
                 *([Mount(paths.ablate, "/ablate")] if self.ablating else []),
             ],
             env=self.environment(),
             name=self.CONTAINER,
             detach=detach,
             options=["--cap-add", "IPC_LOCK", "--restart", "unless-stopped"],
+        )
+
+    def _keeper(self) -> DockerRun:
+        """`dsv41 keep` in the toolbox image, restarted by Docker like the server. The model folder and the Hugging
+        Face cache keep their host paths, so the settings mean the same inside it."""
+        paths, image = self.settings.paths, self.settings.image
+        passed = ("DSV41_SERVE_", *ENGINE_PREFIXES)
+        env = {key: value for key, value in Environment.load().items() if key.startswith(passed)}
+        env |= {
+            "DSV41_PATHS_ROOT": str(paths.root),
+            "DSV41_PATHS_HF_CACHE": str(paths.hf_cache),
+            "DSV41_IMAGE_TAG": image.tag,
+            "DSV41_IMAGE_TOOLBOX_TAG": image.toolbox_tag,
+        }
+        return DockerRun(
+            image=image.toolbox_tag,
+            command=["dsv41", "keep", "--profile", self.profile.name],
+            mounts=[
+                Mount(DOCKER_SOCKET, str(DOCKER_SOCKET), read_only=False),
+                Mount(paths.root, str(paths.root), read_only=False),
+                Mount(paths.hf_cache, str(paths.hf_cache)),
+            ],
+            env=env,
+            gpus=False,
+            name=self.KEEPER,
+            detach=True,
+            options=["--restart", "unless-stopped", "--group-add", str(os.stat(DOCKER_SOCKET).st_gid)],
         )
 
     @staticmethod

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from recipe.assets import ToolboxJob
 from recipe.docker import Mount
-from recipe.settings import REPO_ROOT, Settings
+from recipe.settings import Settings
 
 DIRECTIONS = "derisked.safetensors"
 
@@ -27,8 +27,7 @@ class DirectionJob:
         )
         mounts = [
             Mount(self.hub, "/hub"),
-            Mount(REPO_ROOT / "recipe", "/recipe/recipe"),
             Mount(self.settings.paths.ablate, "/ablate", read_only=False),
         ]
-        ToolboxJob(self.settings).run([step], mounts, {"PYTHONPATH": "/recipe"})
+        ToolboxJob(self.settings).run([step], mounts)
         return self.settings.paths.ablate / DIRECTIONS

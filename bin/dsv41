@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# The recipe's CLI from the published toolbox image, no clone needed. It drives Docker on this machine, so the model
+# folder and the Hugging Face cache are mounted at their own paths.
+set -euo pipefail
+
+image=${DSV41_TOOLBOX:-ghcr.io/loke-60000/dsv41-1xgb10-toolbox:latest}
+root=${DSV41_PATHS_ROOT:-$HOME/models/dsv41-1xgb10}
+hub=${DSV41_PATHS_HF_CACHE:-$HOME/.cache/huggingface/hub}
+env_file=${DSV41_ENV_FILE:-$HOME/.config/dsv41.env}
+socket=/var/run/docker.sock
+
+mkdir -p "$root" "$hub"
+args=(--rm -i --network host --user "$(id -u):$(id -g)" --group-add "$(stat -c %g "$socket")"
+      -v "$socket:$socket" -v "$root:$root" -v "$hub:$hub"
+      -e "DSV41_PATHS_ROOT=$root" -e "DSV41_PATHS_HF_CACHE=$hub" -e HOME=/tmp)
+[[ -t 0 && -t 1 ]] && args+=(-t)
+[[ -f $env_file ]] && args+=(--env-file "$env_file")
+[[ -n ${HF_TOKEN:-} ]] && args+=(-e HF_TOKEN)
+exec docker run "${args[@]}" "$image" dsv41 "$@"

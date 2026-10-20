@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 import time
 from pathlib import Path
 
@@ -11,11 +10,10 @@ from recipe.bench.golden import Golden
 from recipe.bench.runner import WorkloadRunner
 from recipe.bench.speed import PROMPTS, PrefillBench, SpeedBench
 from recipe.bench.workload import Workload
-from recipe.guard import MemoryGuard, Units
 from recipe.image import Images
+from recipe.keeper import Keeper, Warmup
 from recipe.pack.cold import GIB, ColdPlanner, ExpertSizes
 from recipe.pack.graft import GraftBuilder
-from recipe.pack.warm import ColdWarmer, available_bytes
 from recipe.probe import Probe
 from recipe.profile import Profile
 from recipe.server import Server
@@ -35,7 +33,7 @@ def main() -> None:
     cold = commands.add_parser("cold", help="plan a cold expert set from routing hits")
     cold.add_argument("--gib", type=float, required=True, help="trellis bytes to leave in mappings")
     cold.add_argument("--hits", type=Path, help="TF_DSV41_HITS output; without it, --prior's experts go first")
-    cold.add_argument("--prior", type=Path, default=Path("config/cold/vllm-recipe-1380.json"))
+    cold.add_argument("--prior", type=Path, default=REPO_ROOT / "config" / "cold" / "vllm-recipe-1380.json")
     cold.add_argument("--out", type=Path, required=True)
     calibrate = commands.add_parser("calibrate", help="send the routing calibration workload to a running server")
     calibrate.add_argument("--profile", default="base")
@@ -55,12 +53,8 @@ def main() -> None:
     prefill = commands.add_parser("prefill", help="first-token time of long prompts")
     prefill.add_argument("--profile", default="base")
     prefill.add_argument("--tokens", default="8192,32768,131072")
-    guard = commands.add_parser("guard", help="kill the server before the box runs out of memory")
-    guard.add_argument("--floor-gib", type=float, default=2.5)
-    units = commands.add_parser("units", help="install the guard and boot warm-up as systemd user units")
-    units.add_argument("action", choices=["install"])
-    units.add_argument("--profile", default="serve")
-    units.add_argument("--floor-gib", type=float, default=2.5)
+    keep = commands.add_parser("keep", help="the keeper container's loop: memory guard and warm-up after each start")
+    keep.add_argument("--profile", default="base")
     serve = commands.add_parser("serve", help="run the server for a profile")
     serve.add_argument("action", choices=["start", "stop", "check", "dry-run", "smoke", "warm"])
     serve.add_argument("--keep-free-gib", type=float, default=6, help="warm: free memory left untouched")
@@ -125,31 +119,15 @@ def main() -> None:
         salt = time.time_ns() % 100_000
         for i, n in enumerate(int(t) for t in args.tokens.split(",")):
             print(bench_prefill.run(n, salt=salt + i).line(), flush=True)
-    elif args.command == "guard":
-        MemoryGuard(Server.CONTAINER, int(args.floor_gib * GIB)).watch()
-    elif args.command == "units":
-        directory = Path.home() / ".config" / "systemd" / "user"
-        print("installed:", ", ".join(Units(sys.executable, args.profile, args.floor_gib, directory).install()))
+    elif args.command == "keep":
+        Keeper(Server(settings, Profile.load(args.profile))).watch()
     elif args.command == "serve":
         server = Server(settings, Profile.load(args.profile))
         actions = {"start": server.start, "stop": server.stop, "check": server.preflight}
         if args.action == "dry-run":
             print(server.dry_run())
         elif args.action == "warm":
-            Probe(server.profile.serve.port, server.profile.serve.model_id).wait_ready()
-            sets = REPO_ROOT / "config" / "cold"
-            cold_set = ColdPlanner.read_set(sets / Path(server.profile.env["TF_DSV41_COLD"]).name)
-            hits = ColdPlanner.read_hits(sets / "hits-calibration.json")
-            warmer = ColdWarmer.of_pack(settings.paths.pack, server.prepared())
-            warmed = warmer.warm(ColdWarmer.order(cold_set, hits), available_bytes(int(args.keep_free_gib * GIB)))
-            print(f"read {warmed / GIB:.1f} GiB of cold experts into the page cache, most routed first")
-            # then the traffic's own experts: a short reply of each kind and one long prompt
-            port, model = server.profile.serve.port, server.profile.serve.model_id
-            bench = SpeedBench(port, model, max_tokens=128)
-            for kind in PROMPTS:
-                bench.run(kind, 1)
-            PrefillBench(port, model).run(4096, salt=time.time_ns() % 100_000)
-            print("warmed with a short reply of each kind and a 4K prompt")
+            print(Warmup(server, int(args.keep_free_gib * GIB)).run())
         elif args.action == "smoke":
             probe = Probe(server.profile.serve.port, server.profile.serve.model_id)
             print("models:", ", ".join(probe.wait_ready()))

@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from recipe.docker import ImageBuild
-from recipe.settings import Image
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from recipe.settings import REPO_ROOT, Image
 
 
 class Images:
@@ -18,7 +14,7 @@ class Images:
         return ImageBuild(REPO_ROOT / "docker" / "Dockerfile", REPO_ROOT, self.image.tag, self._kit()).run()
 
     def toolbox(self) -> str:
-        args = self._kit() | {"ENGINE_IMAGE": self.image.tag}
+        args = self._kit() | {"ENGINE_IMAGE": self.image.tag, "TOOLBOX_IMAGE": self.image.toolbox_tag}
         return ImageBuild(REPO_ROOT / "docker" / "toolbox.Dockerfile", REPO_ROOT, self.image.toolbox_tag, args).run()
 
     def _kit(self) -> dict[str, str]:

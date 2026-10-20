@@ -106,6 +106,10 @@ class Paths(Section):
     def ablate(self) -> Path:
         return self.root / "ablate"
 
+    @property
+    def cold(self) -> Path:
+        return self.root / "cold"
+
 
 @dataclass(frozen=True)
 class Image(Section):

@@ -9,8 +9,8 @@
     "draft_experts": "experts"
   },
   "image": {
-    "tag": "dsv41-1xgb10:dev",
-    "toolbox_tag": "dsv41-1xgb10-toolbox:dev",
+    "tag": "ghcr.io/loke-60000/dsv41-1xgb10:latest",
+    "toolbox_tag": "ghcr.io/loke-60000/dsv41-1xgb10-toolbox:latest",
     "kit_repo": "https://github.com/jayleaton/deepseek-v41-tensorfold-spark",
     "kit_commit": "853310dab967480013eda7cef4e79c2fd041629a"
   },

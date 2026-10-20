@@ -44,10 +44,11 @@ class DockerRun:
 
     def run(self) -> None:
         for mount in self.mounts:
-            if not mount.read_only:
-                mount.host.mkdir(parents=True, exist_ok=True)
-            elif not mount.host.exists():
+            if mount.host.exists():
+                continue
+            if mount.read_only:
                 raise FileNotFoundError(f"read-only mount {mount.host} does not exist")
+            mount.host.mkdir(parents=True)
         subprocess.run(self.argv(), check=True)
 
 
