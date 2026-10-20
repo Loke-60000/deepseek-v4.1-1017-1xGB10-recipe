@@ -27,9 +27,8 @@ Greedy, 512 tokens a request, warm page cache, mixed kinds back to back (`dsv41 
 
 | Streams | Prose per stream | Code per stream | Structured per stream | Aggregate | First token |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 20-21 tok/s | 24-25 tok/s | 20-22 tok/s | 20-25 tok/s | 0.4-1.3 s |
-| 2 | 17-18 | 22-23 | 21-23 | 33-45 | 0.7-1.2 s |
-| 4 | 18-23 | 23-25 | 23-25 | 70-97 | 0.7-1.0 s |
+| 1 | 26.7 tok/s | 27.0 tok/s | 28.0 tok/s | 26-28 tok/s | 0.3-0.4 s |
+| 4 | 24.0 | 24.8 | 24.6 | 92-97 | 0.5-1.0 s |
 | 8 (`serve8`) | 14 | 18 | 19 | 100-136 | 1.6-3.1 s |
 
 Native prefill matches the decode-window path answer for answer on the golden set (`dsv41 golden`), and normal
@@ -37,9 +36,11 @@ requests are byte-identical with the derisked id loaded and running in the same 
 
 ## What decides the speed
 
-- **The working set must stay in RAM.** Weights plus buffers need ~123 GiB; about 26 GiB of experts live in mapped
-  files. Experts the page cache holds cost nothing; the ones it misses are faulted in from NVMe by the GPU, slowly. The
-  routing is skewed (the coldest 30 % of experts take 2.8 % of picks), so the cold set is chosen from measured hits.
+- **The working set must stay in RAM.** Weights plus buffers need ~123 GiB of a box that leaves ~100 for the model.
+  The experts the page cache holds cost nothing; the ones it misses are faulted in from NVMe by the GPU, slowly. The
+  routing is skewed (the coldest 30 % of experts take 2.8 % of picks), so the cold set is chosen from measured hits,
+  and it is larger than the shortfall: 45 GiB mapped lets the page cache follow the traffic (0.5 GB of NVMe reads a
+  sweep, against 8 GB at 25 GiB).
 - **DSpark is off.** Verifying drafted rows touches several times more distinct experts a step; on this memory budget
   that multiplied NVMe reads ~8x and cut 4-stream throughput from ~90 to ~50 tok/s. With the cache warm on one kind
   of text it reaches 35-45 tok/s single-stream on code and JSON, so it is worth revisiting with more RAM.
@@ -69,7 +70,7 @@ the profile, and `DSV41_SERVE_*` overrides the serve options.
 
 | Profile | Use |
 |---|---|
-| `serve` | production: 4 slots x 256K, vision, 4K native prefill, sessions, measured 30 GiB cold set, drafts off |
+| `serve` | production: 4 slots x 256K, vision, 4K native prefill, sessions, measured 45 GiB cold set, drafts off |
 | `serve8` | `serve` with 8 slots sharing the same 1M-token pool: more aggregate, slower per stream |
 | `native` | native prefill check, 1 slot, no drafts |
 | `calibrate` | decode-window prefill and routing hit counters, for choosing the cold set |
