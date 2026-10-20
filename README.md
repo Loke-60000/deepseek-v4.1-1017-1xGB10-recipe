@@ -23,7 +23,8 @@ packs the Engram shards, and the engine image is TensorFold's DeepSeek-V4.1 kit 
 
 ## Measured (one GB10, `serve` profile)
 
-Greedy, 512 tokens a request, warm page cache, mixed kinds back to back (`dsv41 speed`):
+Greedy, 512 tokens a request, warm page cache, mixed kinds back to back (`dsv41 speed`); prompts of 28K tokens
+prefill at ~960 tok/s warm (`dsv41 prefill`):
 
 | Streams | Prose per stream | Code per stream | Structured per stream | Aggregate | First token |
 |---:|---:|---:|---:|---:|---:|
@@ -58,10 +59,15 @@ python3 -m recipe.cli graft          # the pack folder
 python3 -m recipe.cli engram         # Engram shards for one rank
 python3 -m recipe.cli assets --profile serve
 python3 -m recipe.cli serve start --profile serve
+python3 -m recipe.cli serve warm --profile serve    # after every start: see below
 python3 -m recipe.cli serve smoke --profile serve
 ```
 
 The API is at `http://<host>:8888/v1`. `dsv41 serve stop` drains requests first.
+
+`serve warm` reads the most-routed cold experts into the page cache at disk speed, then sends a short reply of each
+kind and one long prompt. A fresh start without it serves the first long prompt at ~90 tok/s and the first replies
+at 8-17 tok/s while experts fault in; with it, ~440 tok/s, and full speed after the first few requests.
 
 ## Profiles
 
