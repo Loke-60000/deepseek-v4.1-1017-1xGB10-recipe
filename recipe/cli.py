@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from recipe.bench.golden import Golden
 from recipe.bench.runner import WorkloadRunner
 from recipe.bench.speed import PROMPTS, PrefillBench, SpeedBench
 from recipe.bench.workload import Workload
+from recipe.guard import MemoryGuard, Units
 from recipe.image import Images
 from recipe.pack.cold import GIB, ColdPlanner, ExpertSizes
 from recipe.pack.graft import GraftBuilder
@@ -53,6 +55,12 @@ def main() -> None:
     prefill = commands.add_parser("prefill", help="first-token time of long prompts")
     prefill.add_argument("--profile", default="base")
     prefill.add_argument("--tokens", default="8192,32768,131072")
+    guard = commands.add_parser("guard", help="kill the server before the box runs out of memory")
+    guard.add_argument("--floor-gib", type=float, default=2.5)
+    units = commands.add_parser("units", help="install the guard and boot warm-up as systemd user units")
+    units.add_argument("action", choices=["install"])
+    units.add_argument("--profile", default="serve")
+    units.add_argument("--floor-gib", type=float, default=2.5)
     serve = commands.add_parser("serve", help="run the server for a profile")
     serve.add_argument("action", choices=["start", "stop", "check", "dry-run", "smoke", "warm"])
     serve.add_argument("--keep-free-gib", type=float, default=6, help="warm: free memory left untouched")
@@ -117,6 +125,11 @@ def main() -> None:
         salt = time.time_ns() % 100_000
         for i, n in enumerate(int(t) for t in args.tokens.split(",")):
             print(bench_prefill.run(n, salt=salt + i).line(), flush=True)
+    elif args.command == "guard":
+        MemoryGuard(Server.CONTAINER, int(args.floor_gib * GIB)).watch()
+    elif args.command == "units":
+        directory = Path.home() / ".config" / "systemd" / "user"
+        print("installed:", ", ".join(Units(sys.executable, args.profile, args.floor_gib, directory).install()))
     elif args.command == "serve":
         server = Server(settings, Profile.load(args.profile))
         actions = {"start": server.start, "stop": server.stop, "check": server.preflight}
