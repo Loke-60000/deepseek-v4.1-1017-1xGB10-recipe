@@ -69,6 +69,10 @@ The API is at `http://<host>:8888/v1`. `dsv41 serve stop` drains requests first.
 kind and one long prompt. A fresh start without it serves the first long prompt at ~90 tok/s and the first replies
 at 8-17 tok/s while experts fault in; with it, ~440 tok/s, and full speed after the first few requests.
 
+`python3 -m recipe.cli units install` adds two systemd user units (needs `loginctl enable-linger`):
+`dsv41-guard` kills the container when MemAvailable drops under `--floor-gib` (2.5 by default), because unified
+memory locks the whole box up before the OOM killer acts, and `dsv41-warm` runs `serve warm` after every boot.
+
 ## Profiles
 
 `config/profiles/*.json`, layered with `extends`; any `TF_DSV41_*` variable in the environment or `.env` overrides
