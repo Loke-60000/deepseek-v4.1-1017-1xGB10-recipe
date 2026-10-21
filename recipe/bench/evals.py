@@ -125,11 +125,12 @@ class MMLUPro(Benchmark):
 
 class AIME2025(Benchmark):
     name = "aime-2025"
+    FILE = ("MathArena/aime_2025", "data/train-00000-of-00001.parquet")
 
     def items(self) -> list[Item]:
         import pandas as pd
 
-        rows = pd.read_parquet(self.fetch("MathArena/aime_2025", "data/train-00000-of-00001.parquet"))
+        rows = pd.read_parquet(self.fetch(*self.FILE))
         prompt = "{problem}\n\nPlease reason step by step, and put your final answer within \\boxed{{}}."
         return [
             Item(f"aime-2025-{row['problem_idx']}", prompt.format(problem=row["problem"]), str(int(row["answer"])), {})
@@ -142,6 +143,11 @@ class AIME2025(Benchmark):
             return None
         digits = re.sub(r"[^\d]", "", boxed[-1])
         return str(int(digits)) if digits else None
+
+
+class AIME2026(AIME2025):
+    name = "aime-2026"
+    FILE = ("MathArena/aime_2026", "data/train-00000-of-00001.parquet")
 
 
 class HumanEvalPlus(Benchmark):
