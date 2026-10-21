@@ -1,0 +1,62 @@
+diff --git a/zig/src/families/deepseek_v41/draft/lanes.zig b/zig/src/families/deepseek_v41/draft/lanes.zig
+index 18dc70f..676c2d8 100644
+--- a/zig/src/families/deepseek_v41/draft/lanes.zig
++++ b/zig/src/families/deepseek_v41/draft/lanes.zig
+@@ -26,8 +26,17 @@ pub const Options = struct {
+     dup: tree.Dup = .{}, // tree.plan's sibling pricing (Python's: TF_DSV41_TREE_DUP_MS a sibling, its pending row counted)
+     slots: u32 = 4, // streams at once
+     spec: spec_mod.Settings = .{}, // the speculative pass (TF_DSV41_SPEC_DRAFT / _SPEC_NUCLEUS)
++    max_live: u32 = std.math.maxInt(u32), // TF_DSV41_SLOT_DRAFT_MAX_LIVE: more streams than this draft nothing
+ };
+ 
++/// TF_DSV41_SLOT_DRAFT_MAX_LIVE=N: with more than N streams held, rounds propose no drafts (each stream verifies its
++/// pending row alone) while the drafter still ingests every committed row, so drafting resumes in context. Unset: no
++/// cap. One stream drafting costs a few experts a step; several verifying their drafts together touch many more.
++pub fn maxLiveFromEnv() !u32 {
++    const v = std.c.getenv("TF_DSV41_SLOT_DRAFT_MAX_LIVE") orelse return std.math.maxInt(u32);
++    return std.fmt.parseInt(u32, std.mem.span(v), 10);
++}
++
+ /// A stream's slot and what the backend holds for it between rounds.
+ pub const St = struct {
+     slot: u32,
+@@ -474,6 +483,7 @@ pub const Lanes = struct {
+         const row0_ids = try a.alloc(u32, requests.len);
+         var n_row0: usize = 0;
+         var n: usize = 0;
++        const capped = x.streams.count() > x.opts.max_live;
+         for (requests) |r| {
+             const st = try x.get(r.stream);
+             var at = st.len;
+@@ -494,7 +504,7 @@ pub const Lanes = struct {
+             st.n = 0;
+             st.n_sib = 0;
+             st.start = at;
+-            if (r.depth == 0) continue;
++            if (r.depth == 0 or capped) continue; // the ingest above still ran
+             if (n == x.opts.slots) return error.TooManySlots;
+             asks[n] = .{ .slot = st.slot, .anchor = anchor, .start = at, .params = dspark.Params.of(r.stream.sampling, at) };
+             whose[n] = st;
+@@ -555,7 +565,8 @@ pub const Lanes = struct {
+     fn heldTree(ptr: *anyopaque, s: *Stream, gpa: Allocator) anyerror!?lanes.stream.Held {
+         const x = self(ptr);
+         const st = try x.get(s);
+-        if (st.n == 0) return null;
++        // no drafts this round: an empty tree, not null (null keeps the engine's asked-for count, HeldMismatch at verify)
++        if (st.n == 0) return .{ .count = 0, .tokens = try gpa.alloc(u32, 0) };
+         const total = st.nodes();
+         const tokens = try gpa.alloc(u32, total);
+         errdefer gpa.free(tokens);
+diff --git a/zig/src/families/deepseek_v41/serve_engine.zig b/zig/src/families/deepseek_v41/serve_engine.zig
+index 31d959b..eeb832a 100644
+--- a/zig/src/families/deepseek_v41/serve_engine.zig
++++ b/zig/src/families/deepseek_v41/serve_engine.zig
+@@ -132,7 +132,7 @@ pub const Served = struct {
+         }
+         // draft trees (TF_DSV41_TREE / _DUP_MS / _ROWS, Python's knobs; off by default): first-position siblings
+         const trees = if (m.pass != null) try tree.Settings.fromEnv() else tree.Settings{};
+-        s.x = try ln.Lanes.init(gpa, tgt, pass, s.costs, .{ .shape = m3.shapeOf(&m.f), .slots = m.slots, .siblings = trees.siblings, .sib_rows = trees.sib_rows, .dup = trees.dup, .depth = try calib_env.depthSettings(&calib_env.env), .spec = if (m.pass != null) try spec.Settings.fromEnv() else .{} });
++        s.x = try ln.Lanes.init(gpa, tgt, pass, s.costs, .{ .shape = m3.shapeOf(&m.f), .slots = m.slots, .siblings = trees.siblings, .sib_rows = trees.sib_rows, .dup = trees.dup, .depth = try calib_env.depthSettings(&calib_env.env), .spec = if (m.pass != null) try spec.Settings.fromEnv() else .{}, .max_live = try ln.maxLiveFromEnv() });
+         s.arena = std.heap.ArenaAllocator.init(gpa);
+         s.cfg = try lanes.Config.init(gpa, try s.x.model(s.arena.allocator(), 64), 16, 15);
+         s.x.policy.depth.forward_rows = if (m.rows) |b| b.cap else 16;
