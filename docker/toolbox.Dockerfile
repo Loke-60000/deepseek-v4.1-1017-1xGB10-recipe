@@ -17,7 +17,7 @@ RUN install -m 0755 -d /etc/apt/keyrings \
        > /etc/apt/sources.list.d/docker.list \
     && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir "huggingface_hub>=1.0"
+    && pip install --no-cache-dir "huggingface_hub>=1.0" h5py scipy
 COPY --from=engine /opt/tensorfold /opt/tensorfold
 
 ARG ENGINE_IMAGE

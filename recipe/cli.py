@@ -11,6 +11,7 @@ from recipe.bench.evals import AIME2025, Benchmark, EvalRun, GPQADiamond, HumanE
 from recipe.bench.golden import Golden
 from recipe.bench.needle import NeedleBench
 from recipe.bench.runner import WorkloadRunner
+from recipe.bench.scicode import SciCode
 from recipe.bench.speed import PROMPTS, PrefillBench, SpeedBench
 from recipe.bench.workload import Workload
 from recipe.image import Images
@@ -59,7 +60,7 @@ def main() -> None:
     prefill = commands.add_parser("prefill", help="first-token time of long prompts")
     prefill.add_argument("--profile", default="base")
     prefill.add_argument("--tokens", default="8192,32768,131072")
-    evals = commands.add_parser("eval", help="accuracy on GPQA Diamond, AIME 2025, MMLU-Pro and HumanEval+")
+    evals = commands.add_parser("eval", help="accuracy on GPQA Diamond, AIME 2025, MMLU-Pro, HumanEval+ and SciCode")
     evals.add_argument("--profile", default="base")
     evals.add_argument("--bench", default="gpqa-diamond,aime-2025,humaneval-plus,mmlu-pro")
     evals.add_argument("--effort", default="max")
@@ -145,6 +146,9 @@ def main() -> None:
             "aime-2025": AIME2025(cache),
             "humaneval-plus": HumanEvalPlus(cache, settings.image.toolbox_tag, out / "sandbox"),
             "mmlu-pro": MMLUPro(cache),
+            "scicode": SciCode(
+                cache, settings.image.toolbox_tag, out / "sandbox", settings.paths.cache / "scicode-test_data.h5"
+            ),
         }
         run = EvalRun(probe, out, args.concurrency, args.max_tokens, args.effort)
         for name in args.bench.split(","):

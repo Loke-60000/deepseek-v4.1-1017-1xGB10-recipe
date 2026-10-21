@@ -5,6 +5,7 @@ import random
 import re
 import subprocess
 import tempfile
+import threading
 import urllib.error
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
@@ -60,6 +61,14 @@ class Benchmark(ABC):
 
     @abstractmethod
     def parse(self, text: str) -> str | None: ...
+
+    def chains(self, items: list[Item]) -> list[list[Item]]:
+        """Items asked one after another, in order; different chains are asked in parallel."""
+        return [[item] for item in items]
+
+    def prompt(self, item: Item, replies: dict[str, str]) -> str:
+        """The prompt for an item, given the replies so far: those to the items before it in its chain are there."""
+        return item.prompt
 
     def grade(self, items: list[Item], texts: dict[str, str]) -> dict[str, bool]:
         return {item.id: self.parse(texts[item.id]) == item.answer for item in items}
@@ -214,9 +223,35 @@ class HumanEvalPlus(Benchmark):
         return {item.id: item.id in passed for item in items}
 
 
+class Replies:
+    """A benchmark's replies so far, each appended to a JSONL file as it arrives."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.done = {r["id"]: r for r in self._read(path)}
+        self.lock = threading.Lock()
+
+    def texts(self) -> dict[str, str]:
+        with self.lock:
+            return {key: record["text"] for key, record in self.done.items()}
+
+    def add(self, record: dict[str, Any]) -> int:
+        with self.lock, self.path.open("a") as log:
+            log.write(json.dumps(record) + "\n")
+            self.done[record["id"]] = record
+            return len(self.done)
+
+    @staticmethod
+    def _read(path: Path) -> Iterator[dict[str, Any]]:
+        if path.exists():
+            for line in path.read_text().splitlines():
+                if line.strip():
+                    yield json.loads(line)
+
+
 class EvalRun:
-    """Sends a benchmark's prompts to the local server, a few at a time, and keeps every reply on disk: a run that
-    stops (a restart, a lost connection) picks up where it left off."""
+    """Sends a benchmark's prompts to the local server, a few chains at a time, and keeps every reply on disk: a run
+    that stops (a restart, a lost connection) picks up where it left off."""
 
     def __init__(self, probe: Probe, out: Path, concurrency: int, max_tokens: int, effort: str):
         self.probe = probe
@@ -227,18 +262,15 @@ class EvalRun:
 
     def run(self, bench: Benchmark) -> dict[str, Any]:
         self.out.mkdir(parents=True, exist_ok=True)
-        replies_path = self.out / f"{bench.name}.replies.jsonl"
+        replies = Replies(self.out / f"{bench.name}.replies.jsonl")
         items = bench.items()
-        done = {r["id"]: r for r in self._read(replies_path)}
-        todo = [item for item in items if item.id not in done]
+        done = replies.done
+        todo = [chain for chain in bench.chains(items) if any(item.id not in done for item in chain)]
         print(f"{bench.name}: {len(items)} questions, {len(done)} already answered", flush=True)
-        with ThreadPoolExecutor(self.concurrency) as pool, replies_path.open("a") as log:
-            for future in as_completed([pool.submit(self._ask, item) for item in todo]):
-                record = future.result()
-                log.write(json.dumps(record) + "\n")
-                log.flush()
-                done[record["id"]] = record
-                print(f"{bench.name}: {len(done)}/{len(items)}", flush=True)
+        with ThreadPoolExecutor(self.concurrency) as pool:
+            futures = [pool.submit(self._ask_chain, bench, chain, replies, len(items)) for chain in todo]
+            for future in as_completed(futures):
+                future.result()
         texts = {item.id: done[item.id]["text"] for item in items}
         verdicts = bench.grade(items, texts)
         outcomes = [
@@ -257,15 +289,21 @@ class EvalRun:
         (self.out / f"{bench.name}.summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         return summary
 
-    def _ask(self, item: Item) -> dict[str, Any]:
+    def _ask_chain(self, bench: Benchmark, chain: list[Item], replies: Replies, total: int) -> None:
+        for item in chain:
+            if item.id not in replies.done:
+                answered = replies.add(self._ask(item.id, bench.prompt(item, replies.texts())))
+                print(f"{bench.name}: {answered}/{total}", flush=True)
+
+    def _ask(self, item_id: str, prompt: str) -> dict[str, Any]:
         extra = {"reasoning_effort": self.effort}
         for attempt in range(3):
             try:
-                reply = self.probe.complete([{"role": "user", "content": item.prompt}], self.max_tokens, extra)
-                return {"id": item.id, "text": reply.text, "tokens": reply.completion_tokens, "seconds": reply.seconds}
+                reply = self.probe.complete([{"role": "user", "content": prompt}], self.max_tokens, extra)
+                return {"id": item_id, "text": reply.text, "tokens": reply.completion_tokens, "seconds": reply.seconds}
             except (urllib.error.URLError, ConnectionError, TimeoutError) as error:
                 if attempt == 2:
-                    return {"id": item.id, "text": "", "tokens": 0, "seconds": 0.0, "error": str(error)}
+                    return {"id": item_id, "text": "", "tokens": 0, "seconds": 0.0, "error": str(error)}
                 self.probe.wait_ready()
         raise AssertionError("unreachable")
 
@@ -282,10 +320,3 @@ class EvalRun:
             "max_tokens": self.max_tokens,
             "mean_tokens": round(sum(o.tokens for o in outcomes) / n),
         }
-
-    @staticmethod
-    def _read(path: Path) -> Iterator[dict[str, Any]]:
-        if path.exists():
-            for line in path.read_text().splitlines():
-                if line.strip():
-                    yield json.loads(line)
