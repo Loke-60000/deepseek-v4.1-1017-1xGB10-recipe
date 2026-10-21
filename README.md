@@ -34,7 +34,7 @@ Known limits:
 
 ## Benchmarks
 
-<p align="center"><img src="docs/assets/benchmarks.png" alt="Benchmarks table: this quant's GPQA Diamond, AIME 2025, HumanEval+ and MMLU-Pro scores are being measured. Published: GPQA Diamond 90.9% DeepSeek-V4.1-Flash, 90.1% V4-Pro, 91.7% GPT-5.6 Luna (Vals), 91.7% Qwen3.8-Flash-Next; MMLU-Pro 87.5% V4-Pro, 86.0% GPT-5.6 Luna (Vals); no published AIME 2025 or HumanEval+ scores for these models." width="100%"></p>
+<p align="center"><img src="docs/assets/benchmarks.png" alt="Benchmarks table, this quant's scores being measured. Published: GPQA Diamond 90.9% V4.1-Flash, 90.1% V4-Pro, 91.7% GPT-5.6 Luna (Vals), 96.0% Claude Sonnet 5.5 (Epoch), 91.7% Qwen3.8-Flash-Next; SciCode (Artificial Analysis) 55.9%, 51.0%, 53.6%, 61.0%, 50.6%; AIME 2026 100% V4.1-Flash, 96.7% V4-Pro (MathArena); LiveCodeBench v6 93.5% V4-Pro, 91.9% Qwen3.8-Flash-Next." width="100%"></p>
 
 ## Running it
 
