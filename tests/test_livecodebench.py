@@ -8,6 +8,7 @@ import unittest
 import zlib
 from pathlib import Path
 
+from recipe.bench.evals import Sandbox
 from recipe.bench.livecodebench import GRADER, LiveCodeBench
 
 
@@ -57,7 +58,7 @@ class LiveCodeBenchTest(unittest.TestCase):
         self.assertEqual(verdicts, {"t0": "1", "t1": "0", "t2": "1", "t3": "0", "t4": "1", "t5": "0"})
 
     def test_code_is_taken_from_the_last_python_block(self):
-        bench = LiveCodeBench(Path("."), "image", Path("."), "2025-02-01", "2025-05-01")
+        bench = LiveCodeBench(Path("."), Sandbox("image", Path(".")), "2025-02-01", "2025-05-01")
         self.assertEqual(bench.parse("```python\nx = 1\n```\nbetter:\n```python\nx = 2\n```"), "x = 2\n")
 
 

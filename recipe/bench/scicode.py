@@ -5,14 +5,12 @@ import hashlib
 import json
 import re
 import shutil
-import subprocess
-import tempfile
 import urllib.request
 from functools import cached_property
 from pathlib import Path
 from typing import Any
 
-from recipe.bench.evals import Benchmark, Item
+from recipe.bench.evals import Benchmark, Item, Sandbox
 
 TEMPLATE = """PROBLEM DESCRIPTION:
 You will be provided with problem steps along with background knowledge necessary for solving the problem. Your task \
@@ -63,10 +61,9 @@ class SciCode(Benchmark):
     )
     TEST_DATA_SHA256 = "48b0272a88b17dbd29777c217e1b4fb2b019b92e11cc2add847409db9541b890"
 
-    def __init__(self, cache: Path, sandbox_image: str, scratch: Path, test_data: Path):
+    def __init__(self, cache: Path, sandbox: Sandbox, test_data: Path):
         super().__init__(cache)
-        self.sandbox_image = sandbox_image
-        self.scratch = scratch
+        self.sandbox = sandbox
         self.test_data = test_data
 
     @cached_property
@@ -152,43 +149,19 @@ class SciCode(Benchmark):
 
     def grade(self, items: list[Item], texts: dict[str, str]) -> dict[str, bool]:
         test_data = self.download_test_data()
-        self.scratch.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=self.scratch) as tmp:
-            Path(tmp).chmod(0o755)
-            (Path(tmp) / "scicode" / "compare").mkdir(parents=True)
-            shutil.copy(Path(__file__).with_name("scicode_cmp.py"), Path(tmp) / "scicode" / "compare" / "cmp.py")
+        with self.sandbox.folder() as tmp:
+            (tmp / "scicode" / "compare").mkdir(parents=True)
+            shutil.copy(Path(__file__).with_name("scicode_cmp.py"), tmp / "scicode" / "compare" / "cmp.py")
             files = {}
             for n, item in enumerate(items):
                 files[f"/w/t{n}.py"] = item.id
-                (Path(tmp) / f"t{n}.py").write_text(self.program(item, texts))
+                (tmp / f"t{n}.py").write_text(self.program(item, texts))
             script = (
                 "python3 -c 'import h5py, scipy, sympy' || exit 3; "
                 'cd /tmp && for f in /w/t*.py; do timeout 1800 python3 "$f" >/dev/null 2>&1 && echo "$f"; done; true'
             )
-            run = subprocess.run(
-                [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "--network",
-                    "none",
-                    "--user",
-                    "65534:65534",
-                    "-v",
-                    f"{tmp}:/w:ro",
-                    "-v",
-                    f"{test_data}:/data/test_data.h5:ro",
-                    "--entrypoint",
-                    "bash",
-                    self.sandbox_image,
-                    "-c",
-                    script,
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            passed = {files[name] for name in run.stdout.split() if name in files}
+            out = self.sandbox.run(tmp, ["bash", "-c", script], {test_data: "/data/test_data.h5"})
+        passed = {files[name] for name in out.split() if name in files}
         return {item.id: item.id in passed for item in items}
 
     def download_test_data(self) -> Path:

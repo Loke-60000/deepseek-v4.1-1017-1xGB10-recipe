@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from recipe.bench.evals import AIME2025, Benchmark, EvalRun, HumanEvalPlus, Item
+from recipe.bench.evals import AIME2026, Benchmark, EvalRun, Item, Sandbox
 from recipe.bench.scicode import SciCode
 from recipe.probe import Reply
 
@@ -53,7 +53,7 @@ def scicode(root):
             "test_cases": list(tests),
         }
 
-    bench = SciCode(root, "image", root, root / "test_data.h5")
+    bench = SciCode(root, Sandbox("image", root), root / "test_data.h5")
     bench.problems = {
         "62": {
             "problem_id": "62",
@@ -75,11 +75,9 @@ class EvalsTest(unittest.TestCase):
         self.assertEqual(Benchmark.letter("Answer: A is wrong.\n**Answer: (c)**"), "C")
         self.assertEqual(Benchmark.letter("Answer：D"), "D")
         self.assertIsNone(Benchmark.letter("I think it is B"))
-        aime = AIME2025(Path("."))
+        aime = AIME2026(Path("."))
         self.assertEqual(aime.parse("so \\boxed{12} then \\boxed{ 070 }"), "70")
         self.assertIsNone(aime.parse("70"))
-        code = HumanEvalPlus(Path("."), "image", Path(".")).parse("x\n```python\ndef f():\n    return 1\n```\n")
-        self.assertEqual(code, "def f():\n    return 1\n")
 
     def test_options_are_lettered(self):
         prompt = Benchmark.mcq("Q?", ["one", "two"])

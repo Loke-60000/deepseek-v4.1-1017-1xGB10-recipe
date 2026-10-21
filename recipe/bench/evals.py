@@ -10,6 +10,7 @@ import urllib.error
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -106,43 +107,16 @@ class GPQADiamond(Benchmark):
         return self.letter(text)
 
 
-class MMLUPro(Benchmark):
-    name = "mmlu-pro"
-
-    def __init__(self, cache: Path, sample: int = 1000):
-        super().__init__(cache)
-        self.sample = sample
+class AIME2026(Benchmark):
+    name = "aime-2026"
 
     def items(self) -> list[Item]:
         import pandas as pd
 
-        rows = pd.read_parquet(self.fetch("TIGER-Lab/MMLU-Pro", "data/test-00000-of-00001.parquet"))
-        picked = rows.sample(n=self.sample, random_state=0).sort_values("question_id")
-        return [
-            Item(
-                f"mmlu-pro-{row['question_id']}",
-                self.mcq(row["question"], list(row["options"])),
-                row["answer"],
-                {"category": row["category"]},
-            )
-            for row in picked.to_dict("records")
-        ]
-
-    def parse(self, text: str) -> str | None:
-        return self.letter(text)
-
-
-class AIME2025(Benchmark):
-    name = "aime-2025"
-    FILE = ("MathArena/aime_2025", "data/train-00000-of-00001.parquet")
-
-    def items(self) -> list[Item]:
-        import pandas as pd
-
-        rows = pd.read_parquet(self.fetch(*self.FILE))
+        rows = pd.read_parquet(self.fetch("MathArena/aime_2026", "data/train-00000-of-00001.parquet"))
         prompt = "{problem}\n\nPlease reason step by step, and put your final answer within \\boxed{{}}."
         return [
-            Item(f"aime-2025-{row['problem_idx']}", prompt.format(problem=row["problem"]), str(int(row["answer"])), {})
+            Item(f"aime-2026-{row['problem_idx']}", prompt.format(problem=row["problem"]), str(int(row["answer"])), {})
             for row in rows.to_dict("records")
         ]
 
@@ -154,79 +128,27 @@ class AIME2025(Benchmark):
         return str(int(digits)) if digits else None
 
 
-class AIME2026(AIME2025):
-    name = "aime-2026"
-    FILE = ("MathArena/aime_2026", "data/train-00000-of-00001.parquet")
+class Sandbox:
+    """A throwaway container in the toolbox image, with no network and as nobody, for code the model wrote: the files go
+    in a world-readable scratch folder mounted read-only at /w."""
 
-
-class HumanEvalPlus(Benchmark):
-    """HumanEval with EvalPlus's extended tests, run with no network in a throwaway container."""
-
-    name = "humaneval-plus"
-    PROMPT = (
-        "Complete the following Python function. Reply with the complete function, including the signature and any "
-        "imports it needs, in one ```python code block.\n\n```python\n{prompt}```"
-    )
-    BROKEN = frozenset({"HumanEval/32"})  # its test fails the dataset's own reference solution
-
-    def __init__(self, cache: Path, sandbox_image: str, scratch: Path):
-        super().__init__(cache)
-        self.sandbox_image = sandbox_image
+    def __init__(self, image: str, scratch: Path):
+        self.image = image
         self.scratch = scratch
 
-    def items(self) -> list[Item]:
-        lines = self.fetch("evalplus/humanevalplus", "test.jsonl").read_text().splitlines()
-        tasks = [t for t in (json.loads(line) for line in lines if line.strip()) if t["task_id"] not in self.BROKEN]
-        return [
-            Item(
-                t["task_id"],
-                self.PROMPT.format(prompt=t["prompt"]),
-                "pass",
-                {"test": t["test"], "entry": t["entry_point"]},
-            )
-            for t in tasks
-        ]
-
-    def parse(self, text: str) -> str | None:
-        blocks = re.findall(r"```(?:python)?\n(.*?)```", text, flags=re.S)
-        return blocks[-1] if blocks else None
-
-    def grade(self, items: list[Item], texts: dict[str, str]) -> dict[str, bool]:
+    @contextmanager
+    def folder(self) -> Iterator[Path]:
         self.scratch.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=self.scratch) as tmp:
             Path(tmp).chmod(0o755)
-            files = {}
-            for n, item in enumerate(items):
-                code = self.parse(texts[item.id])
-                if code is None:
-                    continue
-                files[f"t{n}.py"] = item.id
-                program = f"{code}\n\n{item.extra['test']}\n\ncheck({item.extra['entry']})\n"
-                (Path(tmp) / f"t{n}.py").write_text(program)
-            script = 'cd /w && for f in t*.py; do timeout 30 python3 "$f" >/dev/null 2>&1 && echo "$f"; done; true'
-            run = subprocess.run(
-                [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "--network",
-                    "none",
-                    "--user",
-                    "65534:65534",
-                    "-v",
-                    f"{tmp}:/w:ro",
-                    "--entrypoint",
-                    "bash",
-                    self.sandbox_image,
-                    "-c",
-                    script,
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            passed = {files[name] for name in run.stdout.split() if name in files}
-        return {item.id: item.id in passed for item in items}
+            yield Path(tmp)
+
+    def run(self, folder: Path, command: list[str], mounts: dict[Path, str] | None = None) -> str:
+        volumes = [f"{folder}:/w:ro", *(f"{host}:{inside}:ro" for host, inside in (mounts or {}).items())]
+        argv = ["docker", "run", "--rm", "--network", "none", "--user", "65534:65534"]
+        argv += [flag for volume in volumes for flag in ("-v", volume)]
+        argv += ["--entrypoint", command[0], self.image, *command[1:]]
+        return subprocess.run(argv, capture_output=True, text=True, check=True).stdout
 
 
 class Replies:

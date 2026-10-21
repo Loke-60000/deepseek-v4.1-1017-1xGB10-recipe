@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
-import tempfile
 from pathlib import Path
 
-from recipe.bench.evals import Benchmark, Item
+from recipe.bench.evals import Benchmark, Item, Sandbox
 
 SYSTEM = (
     "You are an expert Python programmer. You will be given a question (problem specification) and will generate a "
@@ -93,10 +91,9 @@ class LiveCodeBench(Benchmark):
     name = "livecodebench-v6"
     REPO = "livecodebench/code_generation_lite"
 
-    def __init__(self, cache: Path, sandbox_image: str, scratch: Path, start: str, end: str):
+    def __init__(self, cache: Path, sandbox: Sandbox, start: str, end: str):
         super().__init__(cache)
-        self.sandbox_image = sandbox_image
-        self.scratch = scratch
+        self.sandbox = sandbox
         self.window = (start, end)
 
     def items(self) -> list[Item]:
@@ -123,37 +120,15 @@ class LiveCodeBench(Benchmark):
         return blocks[-1] if blocks else None
 
     def grade(self, items: list[Item], texts: dict[str, str]) -> dict[str, bool]:
-        self.scratch.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=self.scratch) as tmp:
-            Path(tmp).chmod(0o755)
+        with self.sandbox.folder() as tmp:
             names = {}
             for n, item in enumerate(items):
                 names[f"t{n}"] = item.id
-                (Path(tmp) / f"t{n}.json").write_text(json.dumps(item.extra))
+                (tmp / f"t{n}.json").write_text(json.dumps(item.extra))
                 code = self.parse(texts[item.id])
                 if code is not None:
-                    (Path(tmp) / f"t{n}.py").write_text(code)
-            (Path(tmp) / "grader.py").write_text(GRADER)
-            run = subprocess.run(
-                [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "--network",
-                    "none",
-                    "--user",
-                    "65534:65534",
-                    "-v",
-                    f"{tmp}:/w:ro",
-                    "--entrypoint",
-                    "python3",
-                    self.sandbox_image,
-                    "/w/grader.py",
-                    "/w",
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        verdicts = dict(line.split() for line in run.stdout.splitlines() if re.fullmatch(r"t\d+ [01]", line))
+                    (tmp / f"t{n}.py").write_text(code)
+            (tmp / "grader.py").write_text(GRADER)
+            out = self.sandbox.run(tmp, ["python3", "/w/grader.py", "/w"])
+        verdicts = dict(line.split() for line in out.splitlines() if re.fullmatch(r"t\d+ [01]", line))
         return {item_id: verdicts.get(name) == "1" for name, item_id in names.items()}

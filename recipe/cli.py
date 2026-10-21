@@ -7,7 +7,7 @@ from pathlib import Path
 
 from recipe.ablate.job import DirectionJob
 from recipe.assets import AssetBuilder, EngramPacker
-from recipe.bench.evals import AIME2025, AIME2026, Benchmark, EvalRun, GPQADiamond, HumanEvalPlus, MMLUPro
+from recipe.bench.evals import AIME2026, Benchmark, EvalRun, GPQADiamond, Sandbox
 from recipe.bench.golden import Golden
 from recipe.bench.livecodebench import LiveCodeBench
 from recipe.bench.needle import NeedleBench
@@ -61,7 +61,7 @@ def main() -> None:
     prefill = commands.add_parser("prefill", help="first-token time of long prompts")
     prefill.add_argument("--profile", default="base")
     prefill.add_argument("--tokens", default="8192,32768,131072")
-    evals = commands.add_parser("eval", help="accuracy on GPQA Diamond, AIME 2025, MMLU-Pro, HumanEval+ and SciCode")
+    evals = commands.add_parser("eval", help="accuracy on GPQA Diamond, SciCode, AIME 2026 and LiveCodeBench v6")
     evals.add_argument("--profile", default="base")
     evals.add_argument("--bench", default="gpqa-diamond,scicode,aime-2026,livecodebench-v6")
     evals.add_argument("--effort", default="max")
@@ -142,18 +142,12 @@ def main() -> None:
         probe = Probe(serve_options.port, serve_options.model_id, timeout=7200)
         probe.wait_ready()
         out, cache = settings.paths.state / "evals", settings.paths.hf_cache
+        sandbox = Sandbox(settings.image.toolbox_tag, out / "sandbox")
         benches: dict[str, Benchmark] = {
             "gpqa-diamond": GPQADiamond(cache),
-            "aime-2025": AIME2025(cache),
-            "humaneval-plus": HumanEvalPlus(cache, settings.image.toolbox_tag, out / "sandbox"),
-            "mmlu-pro": MMLUPro(cache),
+            "scicode": SciCode(cache, sandbox, settings.paths.cache / "scicode-test_data.h5"),
             "aime-2026": AIME2026(cache),
-            "livecodebench-v6": LiveCodeBench(
-                cache, settings.image.toolbox_tag, out / "sandbox", "2025-02-01", "2025-05-01"
-            ),
-            "scicode": SciCode(
-                cache, settings.image.toolbox_tag, out / "sandbox", settings.paths.cache / "scicode-test_data.h5"
-            ),
+            "livecodebench-v6": LiveCodeBench(cache, sandbox, "2025-02-01", "2025-05-01"),
         }
         run = EvalRun(probe, out, args.concurrency, args.max_tokens, args.effort)
         for name in args.bench.split(","):
