@@ -68,6 +68,7 @@ Settings come from `config/recipe.json` and `config/profiles/*.json` inside the 
 |---|---|
 | `serve` | production: 4 slots x 256K, vision, prompt caching, 45 GiB of experts on disk |
 | `serve8` | 8 slots in the same KV pool: more total throughput, slower per stream |
+| `serve-dspark` | experimental: DSpark drafts while one request is live, plain decoding while several are |
 | `calibrate` | counts which experts get routed, to choose what stays on disk |
 | `native`, `bringup` | small single-slot boots for testing |
 
