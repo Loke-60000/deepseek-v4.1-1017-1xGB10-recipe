@@ -27,9 +27,8 @@ Known limits:
 
 - A long *new* prompt runs every expert and pushes the cached ones out, so the next few replies drop to 10-19 tok/s
   until the cache settles. Follow-up turns reuse the cached prompt and are not affected.
-- DSpark speculative decoding runs while one request is live and pauses while several are
-  (`TF_DSV41_SLOT_DRAFT_MAX_LIVE=1`): drafting for several streams at once reads far more experts from disk on this
-  memory budget and halves 4-stream throughput.
+- DSpark speculative decoding is off: on this memory budget it reads far more experts from disk and halves 4-stream
+  throughput.
 - Each token runs the fewest of its 6 routed experts that carry 85 % of the router weight
   (`TF_DSV41_EXPERT_TOPP=0.85`). Running all 6 is a third slower here.
 

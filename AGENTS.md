@@ -63,8 +63,7 @@ every time it starts. Leave it running.
 ## Do not
 
 - Run other GPU workloads on the box, or raise `TF_DSV41_SLOTS` / `TF_DSV41_CONTEXT` without checking memory.
-- Raise `TF_DSV41_SLOT_DRAFT_MAX_LIVE` above 1 or unset `TF_DSV41_EXPERT_TOPP`: both are slower on this memory
-  budget.
+- Enable DSpark drafts (`TF_DSV41_DRAFTS`) or unset `TF_DSV41_EXPERT_TOPP`: both are slower on this memory budget.
 - Delete `prepared/` or `engram/` under the model root; they take hours to rebuild.
 - Stop the server with `docker stop`/`docker kill`; use `dsv41 serve stop`, which drains requests and removes the
   keeper.

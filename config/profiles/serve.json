@@ -2,6 +2,10 @@
   "extends": "base",
   "env": {
     "TF_DSV41_COLD": "/cold/measured-45g.json",
-    "TF_DSV41_SLOT_DRAFT_MAX_LIVE": "1"
+    "TF_DSV41_DRAFTS": "0",
+    "TF_DSV41_SLOT_DRAFTS": "0",
+    "TF_DSV41_SPEC_DRAFT": "0",
+    "TF_DSV41_DRAFT_GRAPHS": "0",
+    "TF_DSV41_JOIN_DRAFTS": "0"
   }
 }
