@@ -2,10 +2,12 @@
 
 The engine and the recipe's tools ship as two images, built by GitHub Actions for every release:
 
-| Image | Holds |
-|---|---|
-| `ghcr.io/loke-60000/dsv41-1xgb10` | the patched TensorFold engine that serves the model |
-| `ghcr.io/loke-60000/dsv41-1xgb10-toolbox` | the recipe's CLI, its configs and the build tools |
+| Image | What it is | What runs it |
+|---|---|---|
+| `ghcr.io/loke-60000/dsv41-1xgb10` | The server: TensorFold's DeepSeek-V4.1 engine with this repo's patches, built for the GB10 (sm_121) on the CUDA 13 runtime. No Python, no weights. | the `dsv41` container that `serve start` launches |
+| `ghcr.io/loke-60000/dsv41-1xgb10-toolbox` | Everything else: NVIDIA's PyTorch image with Triton, the kit's Python tools, the engine binaries, this recipe's CLI and configs, and the Docker CLI. | the `dsv41` launcher, asset and pack builds, the keeper, benchmarks |
+
+Neither holds model weights: `dsv41 graft` downloads them from Hugging Face.
 
 Tags: `vX.Y.Z` for each release and `latest` for the newest one (`main` when a build is started by hand from the
 Actions tab). A toolbox image always starts the engine image of its own tag. You do not need to clone this repo or
@@ -68,7 +70,6 @@ Settings come from `config/recipe.json` and `config/profiles/*.json` inside the 
 |---|---|
 | `serve` | production: 4 slots x 256K, vision, prompt caching, 45 GiB of experts on disk |
 | `serve8` | 8 slots in the same KV pool: more total throughput, slower per stream |
-| `serve-dspark` | experimental: DSpark drafts while one request is live, plain decoding while several are |
 | `calibrate` | counts which experts get routed, to choose what stays on disk |
 | `native`, `bringup` | small single-slot boots for testing |
 

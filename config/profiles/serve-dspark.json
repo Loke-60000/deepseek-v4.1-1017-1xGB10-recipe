@@ -1,8 +1,0 @@
-{
-  "extends": "base",
-  "assets": "serve",
-  "env": {
-    "TF_DSV41_COLD": "/cold/measured-45g.json",
-    "TF_DSV41_SLOT_DRAFT_MAX_LIVE": "1"
-  }
-}

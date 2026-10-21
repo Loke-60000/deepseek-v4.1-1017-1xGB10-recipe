@@ -87,20 +87,34 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<EOF
-          Images for this release:
+          Two images, built together from this tag. Use them as a pair: each toolbox starts the engine image of its own tag.
 
-          - \`$ENGINE:$GITHUB_REF_NAME\` (the server)
-          - \`$TOOLBOX:$GITHUB_REF_NAME\` (the recipe CLI and build tools)
+          ### \`$ENGINE:$GITHUB_REF_NAME\`: the server
 
-          Run the recipe without cloning:
+          TensorFold's DeepSeek-V4.1 engine (\`tensorfold-dsv41\`) from jayleaton's kit at the pinned commit, with this
+          repo's engine patches, built for the DGX Spark's GB10 (sm_121) on the CUDA 13 runtime. It is the \`dsv41\`
+          container that \`dsv41 serve start\` launches and serves the OpenAI-compatible API on port 8888. It holds no
+          Python and no model weights: the pack, the Engram tables and the compiled kernels are mounted in.
+
+          ### \`$TOOLBOX:$GITHUB_REF_NAME\`: everything else
+
+          NVIDIA's PyTorch image with Triton, the kit's Python tools, the engine binaries, this recipe's CLI and configs,
+          and the Docker CLI. It builds what the server needs (the grafted pack, the Engram shards, the compiled kernels
+          and RoPE tables), and runs the \`dsv41\` CLI through the launcher, the keeper container (memory guard and
+          warm-up after each start) and the benchmarks.
+
+          Neither image contains model weights: \`dsv41 graft\` downloads them from Hugging Face (about 305 GB).
+
+          ### Run it without cloning
 
           \`\`\`bash
+          mkdir -p ~/.local/bin
           docker run --rm --entrypoint cat $TOOLBOX:$GITHUB_REF_NAME /recipe/bin/dsv41 > ~/.local/bin/dsv41
           chmod +x ~/.local/bin/dsv41
           export DSV41_TOOLBOX=$TOOLBOX:$GITHUB_REF_NAME
           dsv41 graft && dsv41 engram && dsv41 assets --profile serve && dsv41 serve start --profile serve
           \`\`\`
 
-          See docs/running.md for the full setup.
+          See docs/running.md for the full setup and AGENTS.md for unattended deployment.
           EOF
           gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --generate-notes
