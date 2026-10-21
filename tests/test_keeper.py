@@ -81,6 +81,12 @@ class KeeperTest(unittest.TestCase):
             self.server.check_aot()
             self.assertEqual(run.call_count, 3)
 
+    def test_the_server_samples_as_deepseek_recommends(self):
+        argv = self.server.command()
+        flags = dict(zip(argv[::2], argv[1::2], strict=False)) | dict(zip(argv[1::2], argv[2::2], strict=False))
+        self.assertEqual((flags["--temperature"], flags["--top-p"], flags["--top-k"]), ("1.0", "1.0", "0"))
+        self.assertEqual(flags["--max-tokens"], "262144")
+
 
 if __name__ == "__main__":
     unittest.main()

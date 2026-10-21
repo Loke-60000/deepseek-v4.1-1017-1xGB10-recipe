@@ -128,6 +128,12 @@ class Server:
             serve.model_id,
             "--max-tokens",
             str(serve.max_tokens),
+            "--temperature",
+            str(serve.temperature),
+            "--top-p",
+            str(serve.top_p),
+            "--top-k",
+            str(serve.top_k),
         ]
         for alias in serve.aliases:
             argv += ["--alias", alias]

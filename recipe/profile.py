@@ -19,6 +19,9 @@ class ServeOptions(Section):
     aliases: tuple[str, ...]
     port: int
     max_tokens: int
+    temperature: float = 1.0
+    top_p: float = 1.0
+    top_k: int = 0
     ablate_model: str = ""
 
 

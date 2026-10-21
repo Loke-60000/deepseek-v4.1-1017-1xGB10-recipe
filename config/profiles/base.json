@@ -3,7 +3,10 @@
     "model_id": "deepseek-v4.1-flash",
     "aliases": [],
     "port": 8888,
-    "max_tokens": 32768
+    "max_tokens": 262144,
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 0
   },
   "env": {
     "TF_TP_WORLD": "1",
