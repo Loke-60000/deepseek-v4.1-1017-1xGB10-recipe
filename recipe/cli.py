@@ -12,6 +12,7 @@ from recipe.bench.golden import Golden
 from recipe.bench.livecodebench import LiveCodeBench
 from recipe.bench.needle import NeedleBench
 from recipe.bench.runner import WorkloadRunner
+from recipe.bench.scicode import SciCode
 from recipe.bench.speed import PROMPTS, PrefillBench, SpeedBench
 from recipe.bench.workload import Workload
 from recipe.image import Images
@@ -60,9 +61,9 @@ def main() -> None:
     prefill = commands.add_parser("prefill", help="first-token time of long prompts")
     prefill.add_argument("--profile", default="base")
     prefill.add_argument("--tokens", default="8192,32768,131072")
-    evals = commands.add_parser("eval", help="accuracy on GPQA Diamond, AIME 2025, MMLU-Pro and HumanEval+")
+    evals = commands.add_parser("eval", help="accuracy on GPQA Diamond, AIME 2025, MMLU-Pro, HumanEval+ and SciCode")
     evals.add_argument("--profile", default="base")
-    evals.add_argument("--bench", default="gpqa-diamond,aime-2026,livecodebench-v6")
+    evals.add_argument("--bench", default="gpqa-diamond,scicode,aime-2026,livecodebench-v6")
     evals.add_argument("--effort", default="max")
     evals.add_argument("--max-tokens", type=int, default=32768)
     evals.add_argument("--concurrency", type=int, default=4)
@@ -149,6 +150,9 @@ def main() -> None:
             "aime-2026": AIME2026(cache),
             "livecodebench-v6": LiveCodeBench(
                 cache, settings.image.toolbox_tag, out / "sandbox", "2025-02-01", "2025-05-01"
+            ),
+            "scicode": SciCode(
+                cache, settings.image.toolbox_tag, out / "sandbox", settings.paths.cache / "scicode-test_data.h5"
             ),
         }
         run = EvalRun(probe, out, args.concurrency, args.max_tokens, args.effort)
