@@ -1,0 +1,8 @@
+{
+  "extends": "serve",
+  "assets": "serve-1m",
+  "env": {
+    "TF_DSV41_CONTEXT": "1048576",
+    "TF_DSV41_POOL_TOKENS": "2097152"
+  }
+}

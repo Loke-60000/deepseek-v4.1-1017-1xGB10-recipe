@@ -13,6 +13,7 @@ class Reply:
     text: str
     completion_tokens: int
     seconds: float
+    prompt_tokens: int = 0
 
     @property
     def tokens_per_second(self) -> float:
@@ -62,6 +63,7 @@ class Probe:
             text=message.get("content") or json.dumps(message.get("tool_calls") or []),
             completion_tokens=reply.get("usage", {}).get("completion_tokens", 0),
             seconds=time.monotonic() - started,
+            prompt_tokens=reply.get("usage", {}).get("prompt_tokens", 0),
         )
 
     def smoke(self) -> Reply:

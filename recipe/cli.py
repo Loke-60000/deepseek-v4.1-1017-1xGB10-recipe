@@ -9,6 +9,7 @@ from recipe.ablate.job import DirectionJob
 from recipe.assets import AssetBuilder, EngramPacker
 from recipe.bench.evals import AIME2025, Benchmark, EvalRun, GPQADiamond, HumanEvalPlus, MMLUPro
 from recipe.bench.golden import Golden
+from recipe.bench.needle import NeedleBench
 from recipe.bench.runner import WorkloadRunner
 from recipe.bench.speed import PROMPTS, PrefillBench, SpeedBench
 from recipe.bench.workload import Workload
@@ -64,6 +65,10 @@ def main() -> None:
     evals.add_argument("--effort", default="high")
     evals.add_argument("--max-tokens", type=int, default=32768)
     evals.add_argument("--concurrency", type=int, default=4)
+    needle = commands.add_parser("needle", help="retrieval from a long prompt, with the lowest free memory on the way")
+    needle.add_argument("--profile", default="base")
+    needle.add_argument("--tokens", type=int, required=True)
+    needle.add_argument("--depth", default="0.5")
     keep = commands.add_parser("keep", help="the keeper container's loop: memory guard and warm-up after each start")
     keep.add_argument("--profile", default="base")
     serve = commands.add_parser("serve", help="run the server for a profile")
@@ -144,6 +149,12 @@ def main() -> None:
         run = EvalRun(probe, out, args.concurrency, args.max_tokens, args.effort)
         for name in args.bench.split(","):
             print(json.dumps(run.run(benches[name])), flush=True)
+    elif args.command == "needle":
+        serve_options = Profile.load(args.profile).serve
+        probe = Probe(serve_options.port, serve_options.model_id, timeout=7200)
+        probe.wait_ready()
+        for i, depth in enumerate(float(d) for d in args.depth.split(",")):
+            print(NeedleBench(probe).run(args.tokens, depth, salt=time.time_ns() % 100_000 + i).line(), flush=True)
     elif args.command == "keep":
         Keeper(Server(settings, Profile.load(args.profile))).watch()
     elif args.command == "serve":
