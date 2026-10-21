@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from recipe.docker import DockerRun
 from recipe.keeper import Keeper
 from recipe.profile import Profile
 from recipe.server import SHIPPED_COLD, Server
@@ -62,6 +63,23 @@ class KeeperTest(unittest.TestCase):
         self.assertIn(f"{socket}:{socket}", argv)
         self.assertEqual(argv[argv.index("--group-add") + 1], str(socket.stat().st_gid))
         self.assertEqual(argv[-4:], ["dsv41", "keep", "--profile", "serve"])
+
+    def test_a_passed_kernel_check_is_skipped_until_its_inputs_change(self):
+        assets = self.server.assets
+        (assets / "aot").mkdir(parents=True)
+        (assets / "sigs.json").write_text("{}")
+        (assets / "aot" / "aot.json").write_text("[1]")
+        image = mock.Mock(stdout="sha256:abc\n")
+        with mock.patch("recipe.server.subprocess.run", return_value=image), mock.patch.object(DockerRun, "run") as run:
+            self.server.check_aot()
+            self.server.check_aot()
+            self.assertEqual(run.call_count, 1)
+            (assets / "aot" / "aot.json").write_text("[1, 2]")
+            self.server.check_aot()
+            self.assertEqual(run.call_count, 2)
+            image.stdout = "sha256:def\n"
+            self.server.check_aot()
+            self.assertEqual(run.call_count, 3)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shlex
@@ -82,6 +84,12 @@ class Server:
             raise ValueError(f"rope.bin holds {rows} rows, context {self.profile.context} needs {needed}")
 
     def check_aot(self) -> None:
+        """aot-needs lists every kernel variant the profile can launch and fails if the assets lack one (5-10 minutes).
+        Its answer depends only on the engine image, the kernel set and the profile's env, so a pass is remembered under
+        their hash and a start with the same three skips it."""
+        passed = self.settings.paths.state / "aot-passed" / self._aot_key()
+        if passed.exists():
+            return
         DockerRun(
             image=self.settings.image.tag,
             command=["tf-dsv41-m1", "aot-needs", "/assets/sigs.json", "/state/aot-needs.json", "/assets/aot"],
@@ -89,6 +97,18 @@ class Server:
             env=dict(self.profile.env),
             gpus=False,
         ).run()
+        passed.parent.mkdir(parents=True, exist_ok=True)
+        passed.touch()
+
+    def _aot_key(self) -> str:
+        image = subprocess.run(
+            ["docker", "image", "inspect", "-f", "{{.Id}}", self.settings.image.tag], capture_output=True, text=True
+        ).stdout.strip()
+        digest = hashlib.sha256(image.encode())
+        digest.update(json.dumps(sorted(self.profile.env.items())).encode())
+        for name in ("sigs.json", "aot/aot.json"):
+            digest.update((self.assets / name).read_bytes())
+        return digest.hexdigest()[:16]
 
     def command(self) -> list[str]:
         serve = self.profile.serve
