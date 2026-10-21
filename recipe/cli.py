@@ -62,7 +62,7 @@ def main() -> None:
     evals = commands.add_parser("eval", help="accuracy on GPQA Diamond, AIME 2025, MMLU-Pro and HumanEval+")
     evals.add_argument("--profile", default="base")
     evals.add_argument("--bench", default="gpqa-diamond,aime-2025,humaneval-plus,mmlu-pro")
-    evals.add_argument("--effort", default="high")
+    evals.add_argument("--effort", default="max")
     evals.add_argument("--max-tokens", type=int, default=32768)
     evals.add_argument("--concurrency", type=int, default=4)
     needle = commands.add_parser("needle", help="retrieval from a long prompt, with the lowest free memory on the way")

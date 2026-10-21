@@ -19,9 +19,9 @@ stay on the SSD:
 
 ## Speed
 
-<p align="center"><img src="docs/assets/speed.png" alt="1 stream: 29-30 tok/s, first token 0.3 s; 4 streams: 92-97 tok/s in total, 24-25 per stream, first token 0.5-1.0 s; 8 streams: 100-136 tok/s in total, 14-19 per stream, first token 1.6-3.1 s. Prefill 850-1,370 tok/s. Accuracy on GPQA Diamond, AIME 2025, HumanEval+ and MMLU-Pro is being measured; the full model scores 90.9 % on GPQA Diamond." width="100%"></p>
+<p align="center"><img src="docs/assets/speed.png" alt="4 requests at once (8 with serve8), a 256K context window per request, a 1M-token shared context pool. 1 stream: 29-30 tok/s, first token 0.3 s; 4 streams: 92-97 tok/s in total, 24-25 per stream; 8 streams: 100-136 tok/s in total, 14-19 per stream. Prefill 850-1,370 tok/s." width="100%"></p>
 
-Greedy decoding, 512 tokens per request, warm cache. Accuracy runs on the same box at high reasoning effort.
+Greedy decoding, 512 tokens per request, warm cache.
 
 Known limits:
 
@@ -31,6 +31,10 @@ Known limits:
   throughput.
 - Each token runs the fewest of its 6 routed experts that carry 85 % of the router weight
   (`TF_DSV41_EXPERT_TOPP=0.85`). Running all 6 is a third slower here.
+
+## Benchmarks
+
+<p align="center"><img src="docs/assets/benchmarks.png" alt="Benchmarks table: this quant's GPQA Diamond, AIME 2025, HumanEval+ and MMLU-Pro scores are being measured. Published: GPQA Diamond 90.9% DeepSeek-V4.1-Flash, 90.1% V4-Pro, 91.7% GPT-5.6 Luna (Vals), 91.7% Qwen3.8-Flash-Next; MMLU-Pro 87.5% V4-Pro, 86.0% GPT-5.6 Luna (Vals); no published AIME 2025 or HumanEval+ scores for these models." width="100%"></p>
 
 ## Running it
 
