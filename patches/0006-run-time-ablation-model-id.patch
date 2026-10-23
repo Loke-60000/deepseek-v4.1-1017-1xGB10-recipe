@@ -140,10 +140,10 @@ index ffa03ed..7892091 100644
          };
 diff --git a/zig/src/families/deepseek_v41/ablate.zig b/zig/src/families/deepseek_v41/ablate.zig
 new file mode 100644
-index 0000000..e7f79a7
+index 0000000..c2906a9
 --- /dev/null
 +++ b/zig/src/families/deepseek_v41/ablate.zig
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,132 @@
 +//! TF_DSV41_ABLATE=<safetensors>: an abliteration applied at run time to the requests naming TENSORFOLD_ABLATE_MODEL.
 +//! The file (the recipe's extract.py) holds `directions` f32 [L, k, D], `mix_attn` f32 [L, k, k] and `first_layer` i64
 +//! [1]. From first_layer on, each layer's attention output (wo_b) rows subtract mask[row] Q_L^T (A_L (Q_L y)): the
@@ -156,6 +156,8 @@ index 0000000..e7f79a7
 +pub const max_k = 8;
 +/// rows the mask covers: a PF_4K segment and every decode bucket
 +pub const mask_rows = 8192;
++/// set in an ablated request's session tags (above sessions.Tag's fields): the two models never resume each other's states
++pub const session_tag: u32 = 1 << 16;
 +
 +pub const Ablation = struct {
 +    k: u32,
@@ -581,17 +583,18 @@ index 5eb13e9..1e6bbb7 100644
  
      fn begin(p: *anyopaque, slot: u32, ids: []const u32) anyerror!iface.Target.Begun {
 diff --git a/zig/src/families/deepseek_v41/sched_host.zig b/zig/src/families/deepseek_v41/sched_host.zig
-index fabdb3f..11f8dc6 100644
+index fabdb3f..9b4ac58 100644
 --- a/zig/src/families/deepseek_v41/sched_host.zig
 +++ b/zig/src/families/deepseek_v41/sched_host.zig
-@@ -160,6 +160,7 @@ pub const SchedHost = struct {
+@@ -160,7 +160,7 @@ pub const SchedHost = struct {
      fn findFn(ctx: *anyopaque, key: usize) anyerror!?sched.Store.Hit {
          const h = self(ctx);
          std.debug.assert(key == h.cur.key);
-+        if (h.cur.ablate) return null; // TF_DSV41_ABLATE: states are keyed by tokens alone; the modes' states differ
-         const x = (try h.gt.sessions.?.find(h.cur.prompt)) orelse return null;
+-        const x = (try h.gt.sessions.?.find(h.cur.prompt)) orelse return null;
++        const x = (try h.gt.sessions.?.find(h.cur.prompt, h.cur.ablate)) orelse return null;
          return .{ .id = x.id, .pos = x.pos, .ram = x.ram };
      }
+ 
 diff --git a/zig/src/families/deepseek_v41/serve_engine.zig b/zig/src/families/deepseek_v41/serve_engine.zig
 index bbea686..44ea2df 100644
 --- a/zig/src/families/deepseek_v41/serve_engine.zig
@@ -606,28 +609,76 @@ index bbea686..44ea2df 100644
          s.host.on_thread = .{ .ctx = m, .run = bindContext };
          // /metrics' device memory: the bytes this rank holds in cuda.DeviceBuffers (weights, KV pool, staging), its peak
 diff --git a/zig/src/families/deepseek_v41/sessions_gpu.zig b/zig/src/families/deepseek_v41/sessions_gpu.zig
-index cb95e4a..d3da756 100644
+index cb95e4a..341ca36 100644
 --- a/zig/src/families/deepseek_v41/sessions_gpu.zig
 +++ b/zig/src/families/deepseek_v41/sessions_gpu.zig
-@@ -432,7 +432,8 @@ pub const Sessions = struct {
-         const h = &s.hist[s.cur()];
-         if (h.items.len != s.f.slot.pos or s.f.slot.pending != null) return error.BadWindow;
+@@ -40,6 +40,7 @@ const eh = @import("engram_host.zig");
+ const kvs = @import("kv_state.zig");
+ const buffers = @import("buffers.zig");
+ const ced = @import("ced.zig");
++const ablate = @import("ablate.zig");
+ const rowmode = @import("rowmode.zig");
+ const slots_mod = @import("slots.zig");
+ const graphs = @import("graphs.zig");
+@@ -434,7 +435,7 @@ pub const Sessions = struct {
          try s.f.sendSess(.save, 0);
--        if (h.items.len == 0) return null;
-+        if (h.items.len == 0 or s.f.ablate_slots[s.cur()]) return null; // an ablated state is never kept
-+        // ponytail: ablated requests get no prompt reuse; key the store's tag by mode if their multi-turn TTFT matters
+         if (h.items.len == 0) return null;
          const snap = try s.snapshot();
-         const id = s.store.save(s.kx.slot, snap.bounded(), h.items, s.tag(), 0) catch |e| {
+-        const id = s.store.save(s.kx.slot, snap.bounded(), h.items, s.tag(), 0) catch |e| {
++        const id = s.store.save(s.kx.slot, snap.bounded(), h.items, s.slotTag(), 0) catch |e| {
              Snap.release(snap);
-@@ -484,7 +485,7 @@ pub const Sessions = struct {
+             return e;
+         };
+@@ -454,7 +455,7 @@ pub const Sessions = struct {
+         try s.f.sendSess(.prompt, 0);
+         if (h.items.len == 0) return null;
+         const snap = try s.snapshot();
+-        const id = s.store.save(s.kx.slot, snap.bounded(), h.items, s.tag(), prompt_kind) catch |e| {
++        const id = s.store.save(s.kx.slot, snap.bounded(), h.items, s.slotTag(), prompt_kind) catch |e| {
+             Snap.release(snap);
+             return e;
+         };
+@@ -465,9 +466,15 @@ pub const Sessions = struct {
+     /// sessions.Entry.kind: a prompt's replay point (a turn's end is 0)
+     const prompt_kind: u32 = 1;
+ 
+-    /// The entries' tag (sessions.Tag's CED field): replay entries never resume full ones, nor full ones replay's.
+-    fn tag(s: *const Sessions) u32 {
+-        return if (s.f.prefill_state.mode == .replay) ced.tag else ced.tag_fast;
++    /// The entries' tag (sessions.Tag's CED field): replay entries never resume full ones, nor full ones replay's; an
++    /// ablated request's carry ablate.session_tag too.
++    fn tag(s: *const Sessions, ablated: bool) u32 {
++        const mode = if (s.f.prefill_state.mode == .replay) ced.tag else ced.tag_fast;
++        return if (ablated) mode | ablate.session_tag else mode;
++    }
++
++    fn slotTag(s: *const Sessions) u32 {
++        return s.tag(s.f.ablate_slots[s.cur()]);
+     }
+ 
+     /// The slot empty, its pages back (a session entry may hold them), its reservation gone.
+@@ -484,18 +491,18 @@ pub const Sessions = struct {
      /// prices its pool pages as prod's admission does (`admit`).
      pub fn resume_(s: *Sessions, prompt: []const u32, max_new: ?u64) !u64 {
          if (s.f.slot.pos != 0 or s.kx.slot.len != 0) return error.SlotNotEmpty;
 -        const hit = try s.find(prompt);
-+        const hit = if (s.f.ablate_slots[s.cur()]) null else try s.find(prompt);
++        const hit = try s.find(prompt, s.f.ablate_slots[s.cur()]);
          if (max_new) |mn| try s.admit(hit, prompt.len, mn);
          s.ds_valid[s.cur()] = 0;
          return (try s.resumeHit(prompt, hit)).at;
+     }
+ 
+     /// The longest saved entry that strictly prefixes `prompt` (a row must remain to prefill), null: none.
+-    pub fn find(s: *Sessions, prompt: []const u32) !?sessions.store.Hit {
++    pub fn find(s: *Sessions, prompt: []const u32, ablated: bool) !?sessions.store.Hit {
+         const ids = try s.gpa.alloc(i32, prompt.len);
+         defer s.gpa.free(ids);
+         for (ids, prompt) |*d, t| d.* = @intCast(t);
+-        const h = (try s.store.find(s.tag(), ids)) orelse return null;
++        const h = (try s.store.find(s.tag(ablated), ids)) orelse return null;
+         return if (h.pos >= prompt.len) null else h;
+     }
+ 
 diff --git a/zig/src/families/deepseek_v41/target.zig b/zig/src/families/deepseek_v41/target.zig
 index 2aa6c88..b16a608 100644
 --- a/zig/src/families/deepseek_v41/target.zig

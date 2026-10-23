@@ -83,6 +83,8 @@ dsv41 ablate                         # once: extracts the edit from the DERISKED
 
 Then set `DSV41_SERVE_ABLATE_MODEL=<id>` and run `serve start` again. Requests for that id get the DERISKED pack's
 edit, applied at run time to the same weights; other requests in the same batch are not affected.
+Its conversations are cached like the stock id's but apart from them: a follow-up turn resumes the last
+derisked turn's state, never a stock one.
 
 ## Choosing the experts kept on disk
 
