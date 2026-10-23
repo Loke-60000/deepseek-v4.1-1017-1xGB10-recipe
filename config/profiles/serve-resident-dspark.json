@@ -1,0 +1,12 @@
+{
+  "extends": "serve-resident",
+  "assets": "serve",
+  "pack": "pack-save21",
+  "env": {
+    "TF_DSV41_DRAFTS": "1",
+    "TF_DSV41_SLOT_DRAFTS": "1",
+    "TF_DSV41_SPEC_DRAFT": "1",
+    "TF_DSV41_DRAFT_GRAPHS": "1",
+    "TF_DSV41_JOIN_DRAFTS": "1"
+  }
+}
