@@ -31,6 +31,7 @@ class Server:
         self.settings = settings
         self.profile = profile
         self.assets = settings.paths.assets / profile.assets
+        self.pack = settings.paths.root / profile.pack
 
     def start(self) -> None:
         self.preflight()
@@ -69,7 +70,7 @@ class Server:
 
     def preflight(self) -> None:
         paths = self.settings.paths
-        for directory in (paths.pack, paths.engram, self.assets):
+        for directory in (self.pack, paths.engram, self.assets):
             if not directory.is_dir():
                 raise FileNotFoundError(f"missing directory {directory}")
         if self.ablating and not (paths.ablate / DIRECTIONS).is_file():
@@ -160,7 +161,7 @@ class Server:
             image=self.settings.image.tag,
             command=self.command(),
             mounts=[
-                Mount(paths.pack, "/model"),
+                Mount(self.pack, "/model"),
                 Mount(paths.engram, "/engram"),
                 Mount(self.assets, "/assets"),
                 Mount(paths.prepared, "/prepared", read_only=False),

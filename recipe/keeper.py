@@ -26,7 +26,7 @@ class Warmup:
         sets = self.server.settings.paths.cold
         cold = ColdPlanner.read_set(sets / Path(self.server.profile.env["TF_DSV41_COLD"]).name)
         hits = ColdPlanner.read_hits(sets / "hits-calibration.json")
-        warmer = ColdWarmer.of_pack(self.server.settings.paths.pack, self.server.prepared())
+        warmer = ColdWarmer.of_pack(self.server.pack, self.server.prepared())
         read = warmer.warm(ColdWarmer.order(cold, hits), available_bytes(self.keep_free))
         bench = SpeedBench(serve.port, serve.model_id, max_tokens=128)
         for kind in PROMPTS:

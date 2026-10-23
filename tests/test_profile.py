@@ -40,6 +40,12 @@ class ProfileTest(unittest.TestCase):
         profile = Profile.load("child", self.dir, environ={"DSV41_SERVE_ABLATE_MODEL": "gl-zero-skuld"})
         self.assertEqual(profile.serve.ablate_model, "gl-zero-skuld")
 
+    def test_pack_defaults_and_inherits(self):
+        self.assertEqual(Profile.load("child", self.dir, environ={}).pack, "pack")
+        self.write("variant", {"extends": "base", "pack": "pack-save17"})
+        self.write("grandchild", {"extends": "variant", "env": {"TF_DSV41_COLD": None}})
+        self.assertEqual(Profile.load("grandchild", self.dir, environ={}).pack, "pack-save17")
+
     def test_cycle_is_refused(self):
         self.write("base", {"extends": "child"})
         with self.assertRaises(ValueError):

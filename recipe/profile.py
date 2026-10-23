@@ -27,12 +27,14 @@ class ServeOptions(Section):
 
 @dataclass(frozen=True)
 class Profile:
-    """A named serving profile: engine env and serve options, layered through `extends`."""
+    """A named serving profile: engine env and serve options, layered through `extends`. `pack` names the pack folder
+    under the paths root (a variant beside the deployed `pack`, see tools/requant)."""
 
     name: str
     serve: ServeOptions
     env: Mapping[str, str]
     assets: str
+    pack: str = "pack"
 
     @classmethod
     def load(cls, name: str, directory: Path = PROFILES, environ: Mapping[str, str] | None = None) -> Profile:
@@ -40,7 +42,8 @@ class Profile:
         data = cls._resolve(name, directory, ())
         env = {key: value for key, value in data["env"].items() if value is not None}
         env |= {key: value for key, value in environ.items() if key.startswith(ENGINE_PREFIXES)}
-        return cls(name, ServeOptions.load(data["serve"], environ), env, data.get("assets") or name)
+        serve = ServeOptions.load(data["serve"], environ)
+        return cls(name, serve, env, data.get("assets") or name, data.get("pack") or "pack")
 
     @classmethod
     def _resolve(cls, name: str, directory: Path, seen: tuple[str, ...]) -> dict[str, Any]:
@@ -49,9 +52,11 @@ class Profile:
         data: dict[str, Any] = json.loads((directory / f"{name}.json").read_text())
         parent = data.pop("extends", None)
         if parent is None:
-            return {"serve": data.get("serve", {}), "env": data.get("env", {}), "assets": data.get("assets")}
+            keys = ("assets", "pack")
+            return {"serve": data.get("serve", {}), "env": data.get("env", {})} | {k: data.get(k) for k in keys}
         merged = cls._resolve(parent, directory, (*seen, name))
         merged["assets"] = data.get("assets")
+        merged["pack"] = data.get("pack") or merged.get("pack")
         merged["serve"] = merged["serve"] | data.get("serve", {})
         merged["env"] = merged["env"] | data.get("env", {})
         return merged
