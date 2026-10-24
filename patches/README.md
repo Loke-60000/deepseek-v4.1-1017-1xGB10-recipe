@@ -14,3 +14,4 @@ at the commit pinned in `config/recipe.json`, under `engine/zig`. `python3 -m re
 | 0007 | token log for training a draft model (`TF_DSV41_TRACE_TOKENS`) |
 | 0008 | sampling on the GPU for a single rank |
 | 0009 | fixes prompts of 7.2K-8.2K tokens failing with `Unbound` |
+| 0010 | prepared files read O_DIRECT at boot, not through the page cache |

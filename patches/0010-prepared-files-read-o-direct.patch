@@ -1,0 +1,146 @@
+diff --git a/zig/src/families/deepseek_v41/prepared.zig b/zig/src/families/deepseek_v41/prepared.zig
+index 7b1598d..03286cc 100644
+--- a/zig/src/families/deepseek_v41/prepared.zig
++++ b/zig/src/families/deepseek_v41/prepared.zig
+@@ -21,6 +21,10 @@ const Allocator = std.mem.Allocator;
+ const magic = "TFDSV41P";
+ const version: u32 = 1;
+ const page: u64 = 4096;
++const linux = std.os.linux;
++/// Payloads are read O_DIRECT through this many bytes at a time: with the image buffers, the GPU's copies and the
++/// page cache all in one memory, buffered reads of a ~95 GB folder run at ~1 GB/s; direct ones at the drive's speed.
++const bounce_len = 64 << 20;
+ 
+ /// What the images depend on besides the pack's bytes.
+ pub const Key = struct {
+@@ -44,6 +48,9 @@ pub const Cache = struct {
+     write: bool,
+     verify: bool,
+     stats: Stats = .{},
++    /// false once the filesystem refuses O_DIRECT; reads are then buffered and read ahead (`willNeed`)
++    direct: bool = true,
++    bounce: ?[]align(page) u8 = null,
+ 
+     /// The cache TF_DSV41_PREPARED names, or null when unset.
+     pub fn fromEnv(gpa: Allocator, io: Io, p: *const pack_mod.Pack, key: Key) !?Cache {
+@@ -77,6 +84,7 @@ pub const Cache = struct {
+ 
+     pub fn deinit(c: *Cache) void {
+         c.gpa.free(c.root);
++        if (c.bounce) |buf| c.gpa.free(buf);
+     }
+ 
+     fn path(c: *const Cache, buf: []u8, tag: []const u8, suffix: []const u8) ![]const u8 {
+@@ -86,10 +94,10 @@ pub const Cache = struct {
+     /// The kernel asked to read ``<tag>.bin`` ahead (POSIX_FADV_WILLNEED), so the next `get` of it finds its pages while
+     /// the caller uploads the layer before it; a missing file is ignored, nothing waits.
+     pub fn willNeed(c: *const Cache, tag: []const u8) void {
++        if (c.direct) return;
+         var pbuf: [std.fs.max_path_bytes]u8 = undefined;
+         const p = c.path(pbuf[0 .. pbuf.len - 1], tag, "") catch return;
+         pbuf[p.len] = 0;
+-        const linux = std.os.linux;
+         const rc = linux.openat(linux.AT.FDCWD, pbuf[0..p.len :0], .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
+         if (linux.errno(rc) != .SUCCESS) return;
+         const fd: linux.fd_t = @intCast(rc);
+@@ -101,13 +109,19 @@ pub const Cache = struct {
+     pub fn get(c: *Cache, b: *named.Builder, tag: []const u8) !bool {
+         var pbuf: [std.fs.max_path_bytes]u8 = undefined;
+         const t0 = Io.Clock.awake.now(c.io).toNanoseconds();
+-        const file = Io.Dir.cwd().openFile(c.io, try c.path(&pbuf, tag, ""), .{}) catch {
++        const p = try c.path(pbuf[0 .. pbuf.len - 1], tag, "");
++        pbuf[p.len] = 0;
++        const file = Io.Dir.cwd().openFile(c.io, p, .{}) catch {
+             c.stats.misses += 1;
+             return false;
+         };
+         defer file.close(c.io);
+-        const got = readInto(c.gpa, c.io, file, b, c.verify) catch |e| {
+-            std.log.warn("dsv41 prepared: {s} unusable ({t}); building it from the pack", .{ pbuf[0 .. c.root.len + tag.len + 5], e });
++        const direct = c.openDirect(pbuf[0..p.len :0]);
++        defer if (direct) |d| {
++            _ = linux.close(d.fd);
++        };
++        const got = readInto(c.gpa, c.io, file, direct, b, c.verify) catch |e| {
++            std.log.warn("dsv41 prepared: {s} unusable ({t}); building it from the pack", .{ p, e });
+             c.stats.misses += 1;
+             return false;
+         };
+@@ -117,6 +131,23 @@ pub const Cache = struct {
+         return true;
+     }
+ 
++    /// `path` opened O_DIRECT with the bounce buffer, or null when the filesystem (or memory) says no.
++    fn openDirect(c: *Cache, p: [:0]const u8) ?Direct {
++        if (!c.direct) return null;
++        const rc = linux.openat(linux.AT.FDCWD, p, .{ .ACCMODE = .RDONLY, .CLOEXEC = true, .DIRECT = true }, 0);
++        if (linux.errno(rc) != .SUCCESS) {
++            c.direct = false;
++            std.log.info("dsv41 prepared: no O_DIRECT under {s} ({t}); buffered reads", .{ c.root, linux.errno(rc) });
++            return null;
++        }
++        const buf = c.bounce orelse c.gpa.alignedAlloc(u8, .fromByteUnits(page), bounce_len) catch {
++            _ = linux.close(@intCast(rc));
++            return null;
++        };
++        c.bounce = buf;
++        return .{ .fd = @intCast(rc), .buf = buf };
++    }
++
+     /// ``<tag>.bin``'s path.
+     pub fn filePath(c: *const Cache, buf: []u8, tag: []const u8) ![]const u8 {
+         return c.path(buf, tag, "");
+@@ -222,9 +253,38 @@ fn writeOut(gpa: Allocator, io: Io, file: Io.File, b: *const named.Builder) !voi
+     try file.setLength(io, cursor);
+ }
+ 
++/// A prepared file opened O_DIRECT: page-aligned reads through `buf`, copied into each tensor's own buffer.
++const Direct = struct {
++    fd: linux.fd_t,
++    buf: []align(page) u8,
++
++    /// `out.len` bytes at `off` (page aligned, as every payload is); the last read may run past the file's end.
++    fn read(d: Direct, out: []u8, off: u64) !void {
++        var done: usize = 0;
++        while (done < out.len) {
++            const want = @min(d.buf.len, std.mem.alignForward(usize, out.len - done, page));
++            var got: usize = 0;
++            while (got < want) {
++                const rc = linux.pread(d.fd, d.buf[got..want].ptr, want - got, @intCast(off + done + got));
++                switch (linux.errno(rc)) {
++                    .SUCCESS => {},
++                    .INTR => continue,
++                    else => return error.DirectRead,
++                }
++                if (rc == 0) break;
++                got += rc;
++            }
++            const take = @min(got, out.len - done);
++            if (take == 0) return error.Truncated;
++            @memcpy(out[done..][0..take], d.buf[0..take]);
++            done += take;
++        }
++    }
++};
++
+ /// Reads every tensor of a file into `b` (each into its own buffer); returns the payload bytes read. On any error `b`
+ /// gets nothing.
+-fn readInto(gpa: Allocator, io: Io, file: Io.File, b: *named.Builder, verify: bool) !u64 {
++fn readInto(gpa: Allocator, io: Io, file: Io.File, direct: ?Direct, b: *named.Builder, verify: bool) !u64 {
+     var fixed: [16]u8 = undefined;
+     if (try file.readPositionalAll(io, &fixed, 0) != 16) return error.Truncated;
+     if (!std.mem.eql(u8, fixed[0..8], magic)) return error.BadMagic;
+@@ -252,7 +312,12 @@ fn readInto(gpa: Allocator, io: Io, file: Io.File, b: *named.Builder, verify: bo
+         off += e.name_len;
+         const data = try gpa.alignedAlloc(u8, .@"16", e.len);
+         errdefer gpa.free(data);
+-        if (try file.readPositionalAll(io, data, e.offset) != data.len) return error.Truncated;
++        const read_direct = if (direct) |d| blk: {
++            if (e.offset % page != 0) break :blk false;
++            d.read(data, e.offset) catch break :blk false;
++            break :blk true;
++        } else false;
++        if (!read_direct and try file.readPositionalAll(io, data, e.offset) != data.len) return error.Truncated;
+         if (verify) {
+             var sha: [32]u8 = undefined;
+             std.crypto.hash.sha2.Sha256.hash(data, &sha, .{});
