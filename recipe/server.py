@@ -12,7 +12,7 @@ from pathlib import Path
 
 from recipe.ablate.job import DIRECTIONS
 from recipe.docker import DockerRun, Mount
-from recipe.profile import ENGINE_PREFIXES, Profile
+from recipe.profile import ENGINE_PREFIXES, PROFILES, Profile
 from recipe.settings import REPO_ROOT, Environment, Settings
 
 ROPE_MARGIN = 2048
@@ -179,8 +179,11 @@ class Server:
 
     def _keeper(self) -> DockerRun:
         """`dsv41 keep` in the toolbox image, restarted by Docker like the server. The model folder and the Hugging
-        Face cache keep their host paths, so the settings mean the same inside it."""
+        Face cache keep their host paths, so the settings mean the same inside it. The profiles this server read are
+        copied under state/ for it: the image's own may predate them."""
         paths, image = self.settings.paths, self.settings.image
+        profiles = paths.state / "profiles"
+        shutil.copytree(PROFILES, profiles, dirs_exist_ok=True)
         passed = ("DSV41_SERVE_", *ENGINE_PREFIXES)
         env = {key: value for key, value in Environment.load().items() if key.startswith(passed)}
         env |= {
@@ -188,6 +191,7 @@ class Server:
             "DSV41_PATHS_HF_CACHE": str(paths.hf_cache),
             "DSV41_IMAGE_TAG": image.tag,
             "DSV41_IMAGE_TOOLBOX_TAG": image.toolbox_tag,
+            "DSV41_PROFILES": str(profiles),
         }
         return DockerRun(
             image=image.toolbox_tag,

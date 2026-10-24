@@ -37,8 +37,10 @@ class Profile:
     pack: str = "pack"
 
     @classmethod
-    def load(cls, name: str, directory: Path = PROFILES, environ: Mapping[str, str] | None = None) -> Profile:
+    def load(cls, name: str, directory: Path | None = None, environ: Mapping[str, str] | None = None) -> Profile:
+        """`directory` defaults to DSV41_PROFILES (the keeper reads the copy its server made), then config/profiles."""
         environ = Environment.load() if environ is None else environ
+        directory = directory or Path(environ.get("DSV41_PROFILES", PROFILES))
         data = cls._resolve(name, directory, ())
         env = {key: value for key, value in data["env"].items() if value is not None}
         env |= {key: value for key, value in environ.items() if key.startswith(ENGINE_PREFIXES)}

@@ -5,7 +5,7 @@ from unittest import mock
 
 from recipe.docker import DockerRun
 from recipe.keeper import Keeper
-from recipe.profile import Profile
+from recipe.profile import PROFILES, Profile
 from recipe.server import SHIPPED_COLD, Server
 from recipe.settings import Settings
 
@@ -63,6 +63,16 @@ class KeeperTest(unittest.TestCase):
         self.assertIn(f"{socket}:{socket}", argv)
         self.assertEqual(argv[argv.index("--group-add") + 1], str(socket.stat().st_gid))
         self.assertEqual(argv[-4:], ["dsv41", "keep", "--profile", "serve"])
+
+    def test_keeper_reads_the_profiles_its_server_read(self):
+        socket = self.root / "docker.sock"
+        socket.touch()
+        with mock.patch("recipe.server.DOCKER_SOCKET", socket):
+            argv = self.server._keeper().argv()
+        copy = self.root / "state" / "profiles"
+        self.assertIn(f"DSV41_PROFILES={copy}", argv)
+        self.assertEqual((copy / "serve-resident.json").read_bytes(), (PROFILES / "serve-resident.json").read_bytes())
+        self.assertEqual(Profile.load("serve-resident", environ={"DSV41_PROFILES": str(copy)}).pack, "pack-save17")
 
     def test_a_passed_kernel_check_is_skipped_until_its_inputs_change(self):
         assets = self.server.assets
