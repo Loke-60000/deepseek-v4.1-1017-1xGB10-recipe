@@ -72,6 +72,7 @@ Settings come from `config/recipe.json` and `config/profiles/*.json` inside the 
 | `serve8` | 8 slots in the same KV pool: more total throughput, slower per stream |
 | `calibrate` | counts which experts get routed, to choose what stays on disk |
 | `native`, `bringup` | small single-slot boots for testing |
+| `serve-resident*` | every expert in memory, exact top-6, DSpark and 1M variants: these need the Sparking pack, which is not published yet |
 
 To log served tokens for training a draft model later, set `TF_DSV41_TRACE_TOKENS=/state/tokens.jsonl`.
 

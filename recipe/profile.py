@@ -28,7 +28,7 @@ class ServeOptions(Section):
 @dataclass(frozen=True)
 class Profile:
     """A named serving profile: engine env and serve options, layered through `extends`. `pack` names the pack folder
-    under the paths root (a variant beside the deployed `pack`, see tools/requant)."""
+    under the paths root (a variant beside the deployed `pack`)."""
 
     name: str
     serve: ServeOptions
